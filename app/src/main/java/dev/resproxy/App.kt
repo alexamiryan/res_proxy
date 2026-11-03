@@ -20,6 +20,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
@@ -52,14 +53,18 @@ class AppContainer(context: Context) {
         apiKeys = settings.currentKeys(),
     )
 
-    /** Replaces accounts, settings, API keys and the VPN chain with [b]. */
-    suspend fun importBackup(b: BackupPayload) {
-        accounts.replaceAll(b.accounts)
+    /**
+     * Replaces accounts, settings, API keys and the VPN chain with [b]. Runs in [appScope] so it
+     * completes even if the calling screen goes away (saving accounts swaps the first-run UI out).
+     * Accounts are written last for the same reason.
+     */
+    suspend fun importBackup(b: BackupPayload) = appScope.async {
         chain.save(b.chain)
         settings.setKeys(b.apiKeys)
         settings.update { b.settings.copy(wasConnected = false, sessionId = "", schema = AppSettings.SCHEMA) }
+        accounts.replaceAll(b.accounts)
         b.accounts.forEach { acc -> locationCatalogs[acc.provider]?.let { appScope.launch { it.refresh(acc, force = true) } } }
-    }
+    }.await()
 
     /** Connection spec for the selected provider, or null when no account is set up. */
     suspend fun connectionProfile(sessionId: String? = null): Profile? {
