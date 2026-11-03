@@ -11,6 +11,7 @@ import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
+import dev.resproxy.net.Resolver
 import okhttp3.ConnectionPool
 import okhttp3.HttpUrl.Companion.toHttpUrl
 import okhttp3.OkHttpClient
@@ -27,6 +28,7 @@ class ReputationRepository(private val settings: SettingsRepository) {
 
     /** Reputation APIs are called directly (the app is excluded from its own VPN) to save proxy GB. */
     private val direct = OkHttpClient.Builder()
+        .dns(Resolver)
         .connectTimeout(6, TimeUnit.SECONDS)
         .readTimeout(6, TimeUnit.SECONDS)
         .callTimeout(8, TimeUnit.SECONDS)

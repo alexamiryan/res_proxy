@@ -2,21 +2,30 @@ package dev.resproxy
 
 import android.Manifest
 import android.content.pm.PackageManager
+import android.net.VpnService
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.produceState
+import androidx.compose.runtime.remember
 import androidx.core.content.ContextCompat
+import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
 import androidx.navigation.compose.composable
 import androidx.navigation.compose.rememberNavController
+import dev.resproxy.data.Provider
+import dev.resproxy.ui.AccountScreen
 import dev.resproxy.ui.HomeScreen
-import dev.resproxy.ui.ProfileEditScreen
-import dev.resproxy.ui.ProfilesScreen
 import dev.resproxy.ui.ResProxyTheme
 import dev.resproxy.ui.SettingsScreen
+import dev.resproxy.vpn.TunnelController
+import dev.resproxy.vpn.TunnelState
+import kotlinx.coroutines.launch
 
 class MainActivity : ComponentActivity() {
 
@@ -31,32 +40,39 @@ class MainActivity : ComponentActivity() {
         ) {
             notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS)
         }
+        if (savedInstanceState == null) restoreConnection()
         setContent {
             ResProxyTheme {
+                val ready by produceState(false) { container.ready.await(); value = true }
+                val accounts by container.accounts.accounts.collectAsState(initial = null)
+                val loaded = accounts?.takeIf { ready } ?: return@ResProxyTheme
+                val start = remember { if (Provider.IPROYAL in loaded) "home" else "account" }
                 val nav = rememberNavController()
-                NavHost(nav, startDestination = "home") {
+                NavHost(nav, startDestination = start) {
                     composable("home") {
-                        HomeScreen(
-                            onProfiles = { nav.navigate("profiles") },
-                            onSettings = { nav.navigate("settings") },
-                            onNewProfile = { nav.navigate("profile/new") },
-                        )
+                        HomeScreen(onSettings = { nav.navigate("settings") }, onAccount = { nav.navigate("account") })
                     }
-                    composable("profiles") {
-                        ProfilesScreen(
-                            onBack = { nav.popBackStack() },
-                            onEdit = { id -> nav.navigate("profile/$id") },
-                        )
+                    composable("account") {
+                        AccountScreen(canGoBack = nav.previousBackStackEntry != null) {
+                            if (!nav.popBackStack()) nav.navigate("home") { popUpTo("account") { inclusive = true } }
+                        }
                     }
-                    composable("profile/{id}") { entry ->
-                        ProfileEditScreen(
-                            profileId = entry.arguments?.getString("id")?.takeIf { it != "new" },
-                            onDone = { nav.popBackStack() },
-                        )
+                    composable("settings") {
+                        SettingsScreen(onBack = { nav.popBackStack() }, onAccount = { nav.navigate("account") })
                     }
-                    composable("settings") { SettingsScreen(onBack = { nav.popBackStack() }) }
                 }
             }
+        }
+    }
+
+    /** Reconnects on app start if the user was connected and didn't disconnect. */
+    private fun restoreConnection() = lifecycleScope.launch {
+        container.ready.await()
+        val s = container.settings.current()
+        if (s.autoConnect && s.wasConnected && !TunnelState.status.value.isActive &&
+            container.accounts.get(s.provider) != null && VpnService.prepare(this@MainActivity) == null
+        ) {
+            TunnelController.connect(this@MainActivity)
         }
     }
 }

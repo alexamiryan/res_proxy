@@ -19,9 +19,45 @@ enum class TunnelMode { FULL, PROXY_ONLY }
 @Serializable
 enum class SplitMode { ALL, ONLY_SELECTED, EXCEPT_SELECTED }
 
+/** Provider login. [apiToken] (IPRoyal dashboard → Settings → API) is only used to fetch location lists. */
+@Serializable
+data class Account(
+    val provider: Provider = Provider.IPROYAL,
+    val username: String = "",
+    val password: String = "",
+    val apiToken: String = "",
+)
+
+/** Target location as provider codes; names are kept for display. Empty code = any. */
+@Serializable
+data class Location(
+    val country: String = "",
+    val countryName: String = "",
+    val state: String = "",
+    val stateName: String = "",
+    val city: String = "",
+    val cityName: String = "",
+) {
+    val label: String
+        get() = listOf(cityName, stateName, countryName).filter { it.isNotBlank() }.joinToString(", ").ifEmpty { "Any location" }
+}
+
+/** Technical options, all in Settings → Advanced. */
+@Serializable
+data class ConnectionSettings(
+    val protocol: Protocol = Protocol.SOCKS5,
+    val sticky: Boolean = true,
+    val lifetimeMinutes: Int = 1440,
+    val hostOverride: String = "",
+    val portOverride: Int = 0,
+    val tunnelMode: TunnelMode = TunnelMode.FULL,
+    val splitMode: SplitMode = SplitMode.ALL,
+    val apps: Set<String> = emptySet(),
+)
+
 /**
- * A saved proxy profile. [host] / [port] left empty / 0 fall back to the provider preset defaults.
- * [password] is plain text in memory only; [ProfileRepository] encrypts it at rest.
+ * Everything the tunnel needs, derived from [Account] + [AppSettings] at connect time.
+ * [host] / [port] left empty / 0 fall back to the provider preset defaults.
  */
 @Serializable
 data class Profile(
@@ -42,7 +78,29 @@ data class Profile(
     val tunnelMode: TunnelMode = TunnelMode.FULL,
     val splitMode: SplitMode = SplitMode.ALL,
     val apps: Set<String> = emptySet(),
-)
+) {
+    companion object {
+        fun from(account: Account, s: AppSettings, sessionId: String) = Profile(
+            id = account.provider.name,
+            name = account.provider.label,
+            provider = account.provider,
+            protocol = s.connection.protocol,
+            host = s.connection.hostOverride,
+            port = s.connection.portOverride,
+            username = account.username,
+            password = account.password,
+            country = s.location.country,
+            state = s.location.state,
+            city = s.location.city,
+            sticky = s.connection.sticky,
+            lifetimeMinutes = s.connection.lifetimeMinutes,
+            sessionId = sessionId,
+            tunnelMode = s.connection.tunnelMode,
+            splitMode = s.connection.splitMode,
+            apps = s.connection.apps,
+        )
+    }
+}
 
 @Serializable
 enum class Verdict(val severity: Int) { UNKNOWN(-1), CLEAN(0), SUSPICIOUS(1), BAD(2) }
@@ -59,15 +117,27 @@ data class ApiKeys(
 
 @Serializable
 data class AppSettings(
-    val selectedProfileId: String? = null,
-    val autoConnectOnBoot: Boolean = false,
+    val schema: Int = 0,
+    val provider: Provider = Provider.IPROYAL,
+    val location: Location = Location(),
+    val sessionId: String = "",
+    val connection: ConnectionSettings = ConnectionSettings(),
+    /** Keep the TUN up (traffic blocked) while connecting or when the proxy fails. */
+    val killSwitch: Boolean = true,
+    /** Reconnect on app start / boot if the user didn't disconnect. */
+    val autoConnect: Boolean = true,
+    val wasConnected: Boolean = false,
     val recheckOnConnect: Boolean = true,
-    val autoRotate: Boolean = false,
-    val rotateThreshold: Verdict = Verdict.BAD,
-    val maxRotations: Int = 5,
+    val autoRotate: Boolean = true,
+    val rotateThreshold: Verdict = Verdict.SUSPICIOUS,
+    val maxRotations: Int = 10,
     val healthIntervalSec: Int = 30,
-)
+) {
+    companion object {
+        const val SCHEMA = 2
+    }
+}
 
-/** Cumulative bytes per profile, for providers that bill per GB. */
+/** Cumulative bytes per provider, for providers that bill per GB. */
 @Serializable
 data class UsageTotals(val rxBytes: Long = 0, val txBytes: Long = 0)

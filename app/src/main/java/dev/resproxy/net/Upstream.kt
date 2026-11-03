@@ -27,7 +27,7 @@ object Socks5Client {
     fun connect(ep: Endpoint, host: String, port: Int, timeoutMs: Int): Socket {
         val s = Socket()
         try {
-            s.connect(InetSocketAddress(ep.host, ep.port), timeoutMs)
+            s.connect(InetSocketAddress(Resolver.resolve(ep.host), ep.port), timeoutMs)
             s.soTimeout = timeoutMs
             s.tcpNoDelay = true
             handshake(s, ep.username, ep.password, host, port)
@@ -92,7 +92,7 @@ object HttpConnectClient {
     fun connect(ep: Endpoint, host: String, port: Int, timeoutMs: Int): Socket {
         val s = Socket()
         try {
-            s.connect(InetSocketAddress(ep.host, ep.port), timeoutMs)
+            s.connect(InetSocketAddress(Resolver.resolve(ep.host), ep.port), timeoutMs)
             s.soTimeout = timeoutMs
             s.tcpNoDelay = true
             val authority = if (host.contains(':') && !host.startsWith("[")) "[$host]:$port" else "$host:$port"

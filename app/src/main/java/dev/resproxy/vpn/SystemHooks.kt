@@ -17,7 +17,7 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 
-/** Reconnects the last profile after reboot when enabled and VPN consent is still in place. */
+/** Reconnects after reboot / app update if the user hadn't disconnected and VPN consent is still in place. */
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED && intent.action != Intent.ACTION_MY_PACKAGE_REPLACED) return
@@ -26,8 +26,8 @@ class BootReceiver : BroadcastReceiver() {
         container.appScope.launch {
             try {
                 val s = container.settings.current()
-                if (s.autoConnectOnBoot && s.selectedProfileId != null && VpnService.prepare(context) == null) {
-                    TunnelController.connect(context, s.selectedProfileId)
+                if (s.autoConnect && s.wasConnected && VpnService.prepare(context) == null) {
+                    TunnelController.connect(context)
                 }
             } finally {
                 pending.finish()
@@ -56,7 +56,7 @@ class ProxyTileService : TileService() {
         } else if (VpnService.prepare(this) != null) {
             openApp()
         } else {
-            TunnelController.connect(this, null)
+            TunnelController.connect(this)
         }
     }
 

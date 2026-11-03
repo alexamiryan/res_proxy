@@ -41,8 +41,7 @@ object TunnelState {
 
 /** Commands to the service. Callers must have VPN consent (`VpnService.prepare() == null`) before [connect]. */
 object TunnelController {
-    fun connect(ctx: Context, profileId: String?) =
-        send(ctx, ProxyVpnService.ACTION_CONNECT) { putExtra(ProxyVpnService.EXTRA_PROFILE_ID, profileId) }
+    fun connect(ctx: Context) = send(ctx, ProxyVpnService.ACTION_CONNECT)
 
     fun disconnect(ctx: Context) {
         if (TunnelState.status.value.isActive) send(ctx, ProxyVpnService.ACTION_DISCONNECT)
@@ -50,6 +49,11 @@ object TunnelController {
 
     fun rotate(ctx: Context) = send(ctx, ProxyVpnService.ACTION_ROTATE)
     fun recheck(ctx: Context) = send(ctx, ProxyVpnService.ACTION_RECHECK)
+
+    /** Re-targets a running tunnel to the location now in settings; no-op when disconnected. */
+    fun applyLocation(ctx: Context) {
+        if (TunnelState.status.value.isActive) send(ctx, ProxyVpnService.ACTION_APPLY_LOCATION)
+    }
 
     private fun send(ctx: Context, action: String, extras: Intent.() -> Unit = {}) {
         val i = Intent(ctx, ProxyVpnService::class.java).setAction(action).apply(extras)

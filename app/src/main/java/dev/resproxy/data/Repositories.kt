@@ -14,51 +14,59 @@ import kotlinx.serialization.json.Json
 
 internal val json = Json { ignoreUnknownKeys = true; encodeDefaults = true }
 
-class ProfileRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
+/** Provider accounts, stored as one Keystore-encrypted JSON blob. */
+class AccountRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
 
-    private val listSerializer = ListSerializer(Profile.serializer())
+    private val mapSerializer = MapSerializer(Provider.serializer(), Account.serializer())
 
-    val profiles: Flow<List<Profile>> = store.data.map { prefs ->
-        prefs[KEY]?.let { raw ->
-            runCatching { json.decodeFromString(listSerializer, raw) }.getOrDefault(emptyList())
-                .map { it.copy(password = secrets.decrypt(it.password)) }
-        } ?: emptyList()
-    }
+    val accounts: Flow<Map<Provider, Account>> = store.data.map { decode(it) }
 
-    suspend fun all(): List<Profile> = profiles.first()
-    suspend fun get(id: String?): Profile? = id?.let { all().firstOrNull { p -> p.id == id } }
+    fun account(provider: Provider): Flow<Account?> = accounts.map { it[provider] }
 
-    suspend fun save(profile: Profile) = mutate { list ->
-        val i = list.indexOfFirst { it.id == profile.id }
-        if (i >= 0) list.toMutableList().apply { set(i, profile) } else list + profile
-    }
+    suspend fun get(provider: Provider): Account? = accounts.first()[provider]
 
-    suspend fun delete(id: String) = mutate { list -> list.filterNot { it.id == id } }
-
-    private suspend fun mutate(block: (List<Profile>) -> List<Profile>) {
+    suspend fun save(account: Account) {
         store.edit { prefs ->
-            val current = prefs[KEY]?.let {
-                runCatching { json.decodeFromString(listSerializer, it) }.getOrDefault(emptyList())
-            } ?: emptyList()
-            // `current` holds ciphertext; decrypt so callers see plain values, re-encrypt on write.
-            val updated = block(current.map { it.copy(password = secrets.decrypt(it.password)) })
-            prefs[KEY] = json.encodeToString(
-                listSerializer, updated.map { it.copy(password = secrets.encrypt(it.password)) }
-            )
+            val m = decode(prefs) + (account.provider to account)
+            prefs[KEY] = secrets.encrypt(json.encodeToString(mapSerializer, m))
         }
     }
 
+    /** One-time import of credentials saved by the old profile editor; returns that profile's location. */
+    suspend fun migrateLegacyProfiles(): Location? {
+        var location: Location? = null
+        store.edit { prefs ->
+            val raw = prefs[LEGACY_PROFILES] ?: return@edit
+            val legacy = runCatching { json.decodeFromString(ListSerializer(Profile.serializer()), raw) }.getOrDefault(emptyList())
+            val current = decode(prefs)
+            val p = legacy.firstOrNull { it.provider == Provider.IPROYAL && it.username.isNotBlank() }
+            if (p != null && Provider.IPROYAL !in current) {
+                val acc = Account(Provider.IPROYAL, p.username.trim(), secrets.decrypt(p.password).trim())
+                prefs[KEY] = secrets.encrypt(json.encodeToString(mapSerializer, current + (Provider.IPROYAL to acc)))
+                val cc = p.country.trim().lowercase()
+                location = Location(
+                    country = cc, countryName = if (cc.isEmpty()) "" else java.util.Locale("", cc).displayCountry,
+                    state = p.state.trim().lowercase().replace(" ", ""), stateName = p.state.trim(),
+                    city = p.city.trim().lowercase().replace(" ", ""), cityName = p.city.trim(),
+                )
+            }
+            prefs.remove(LEGACY_PROFILES)
+        }
+        return location
+    }
+
+    private fun decode(prefs: Preferences): Map<Provider, Account> =
+        prefs[KEY]?.let { runCatching { json.decodeFromString(mapSerializer, secrets.decrypt(it)) }.getOrNull() } ?: emptyMap()
+
     private companion object {
-        val KEY = stringPreferencesKey("profiles")
+        val KEY = stringPreferencesKey("accounts")
+        val LEGACY_PROFILES = stringPreferencesKey("profiles")
     }
 }
 
 class SettingsRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
 
-    val settings: Flow<AppSettings> = store.data.map { prefs ->
-        prefs[SETTINGS]?.let { runCatching { json.decodeFromString(AppSettings.serializer(), it) }.getOrNull() }
-            ?: AppSettings()
-    }
+    val settings: Flow<AppSettings> = store.data.map { prefs -> upgrade(decode(prefs)) }
 
     val apiKeys: Flow<ApiKeys> = store.data.map { prefs ->
         prefs[KEYS]?.let {
@@ -71,16 +79,33 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
 
     suspend fun update(block: (AppSettings) -> AppSettings) {
         store.edit { prefs ->
-            val cur = prefs[SETTINGS]?.let {
-                runCatching { json.decodeFromString(AppSettings.serializer(), it) }.getOrNull()
-            } ?: AppSettings()
-            prefs[SETTINGS] = json.encodeToString(AppSettings.serializer(), block(cur))
+            prefs[SETTINGS] = json.encodeToString(AppSettings.serializer(), block(upgrade(decode(prefs))))
         }
+    }
+
+    /** Persists the schema upgrade, adopting [legacyLocation] if no location is set yet. */
+    suspend fun migrate(legacyLocation: Location?) = update { s ->
+        if (legacyLocation != null && s.location == Location()) s.copy(location = legacyLocation) else s
     }
 
     suspend fun setKeys(keys: ApiKeys) {
         store.edit { it[KEYS] = secrets.encrypt(json.encodeToString(ApiKeys.serializer(), keys)) }
     }
+
+    private fun decode(prefs: Preferences): AppSettings =
+        prefs[SETTINGS]?.let { runCatching { json.decodeFromString(AppSettings.serializer(), it) }.getOrNull() } ?: AppSettings()
+
+    /** Schema 0/1 → 2: new defaults for kill switch, auto-connect and auto-rotate. */
+    private fun upgrade(s: AppSettings): AppSettings =
+        if (s.schema >= AppSettings.SCHEMA) s
+        else s.copy(
+            schema = AppSettings.SCHEMA,
+            killSwitch = true,
+            autoConnect = true,
+            autoRotate = true,
+            rotateThreshold = Verdict.SUSPICIOUS,
+            maxRotations = 10,
+        )
 
     private companion object {
         val SETTINGS = stringPreferencesKey("settings")
@@ -94,18 +119,18 @@ class StatsRepository(private val store: DataStore<Preferences>) {
 
     val totals: Flow<Map<String, UsageTotals>> = store.data.map { decode(it) }
 
-    suspend fun add(profileId: String, rx: Long, tx: Long) {
+    suspend fun add(key: String, rx: Long, tx: Long) {
         if (rx == 0L && tx == 0L) return
         store.edit { prefs ->
             val m = decode(prefs).toMutableMap()
-            val cur = m[profileId] ?: UsageTotals()
-            m[profileId] = UsageTotals(cur.rxBytes + rx, cur.txBytes + tx)
+            val cur = m[key] ?: UsageTotals()
+            m[key] = UsageTotals(cur.rxBytes + rx, cur.txBytes + tx)
             prefs[KEY] = json.encodeToString(mapSerializer, m)
         }
     }
 
-    suspend fun reset(profileId: String) {
-        store.edit { prefs -> prefs[KEY] = json.encodeToString(mapSerializer, decode(prefs) - profileId) }
+    suspend fun reset(key: String) {
+        store.edit { prefs -> prefs[KEY] = json.encodeToString(mapSerializer, decode(prefs) - key) }
     }
 
     private fun decode(prefs: Preferences): Map<String, UsageTotals> =

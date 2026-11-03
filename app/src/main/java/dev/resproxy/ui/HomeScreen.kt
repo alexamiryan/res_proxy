@@ -24,7 +24,6 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
-import androidx.compose.material.icons.automirrored.filled.List
 import androidx.compose.material.icons.filled.ExpandLess
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.PowerSettingsNew
@@ -58,7 +57,13 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.resproxy.container
-import dev.resproxy.data.AppSettings
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.ui.text.style.TextAlign
+import dev.resproxy.data.Location
+import dev.resproxy.data.Provider
+import dev.resproxy.provider.LocationCatalog
+import kotlinx.coroutines.launch
 import dev.resproxy.data.Verdict
 import dev.resproxy.reputation.ReputationReport
 import dev.resproxy.reputation.SourceResult
@@ -69,22 +74,33 @@ import dev.resproxy.vpn.TunnelStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onProfiles: () -> Unit, onSettings: () -> Unit, onNewProfile: () -> Unit) {
+fun HomeScreen(onSettings: () -> Unit, onAccount: () -> Unit) {
     val ctx = LocalContext.current
+    val c = ctx.container
+    val scope = rememberCoroutineScope()
     val status by TunnelState.status.collectAsState()
-    val profiles by ctx.container.profiles.profiles.collectAsState(initial = null)
-    val settings by ctx.container.settings.settings.collectAsState(initial = AppSettings())
-    val selected = profiles?.let { list -> list.firstOrNull { it.id == settings.selectedProfileId } ?: list.firstOrNull() }
+    val settings by c.settings.settings.collectAsState(initial = null)
+    val account by c.accounts.account(Provider.IPROYAL).collectAsState(initial = null)
+    val catalog by c.ipRoyalLocations.catalog.collectAsState()
+
+    LaunchedEffect(account?.apiToken) { account?.let { c.ipRoyalLocations.refresh(it.apiToken) } }
 
     val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
-        if (it.resultCode == Activity.RESULT_OK) TunnelController.connect(ctx, selected?.id)
+        if (it.resultCode == Activity.RESULT_OK) TunnelController.connect(ctx)
     }
 
     fun toggle() {
         when {
             status.isActive -> TunnelController.disconnect(ctx)
-            selected == null -> onNewProfile()
-            else -> VpnService.prepare(ctx)?.let { consent.launch(it) } ?: TunnelController.connect(ctx, selected.id)
+            account == null -> onAccount()
+            else -> VpnService.prepare(ctx)?.let { consent.launch(it) } ?: TunnelController.connect(ctx)
+        }
+    }
+
+    fun setLocation(loc: Location) {
+        scope.launch {
+            c.settings.update { it.copy(location = loc, sessionId = "") }
+            TunnelController.applyLocation(ctx)
         }
     }
 
@@ -92,10 +108,7 @@ fun HomeScreen(onProfiles: () -> Unit, onSettings: () -> Unit, onNewProfile: () 
         topBar = {
             TopAppBar(
                 title = { Text("ResProxy") },
-                actions = {
-                    IconButton(onClick = onProfiles) { Icon(Icons.AutoMirrored.Filled.List, "Profiles") }
-                    IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") }
-                },
+                actions = { IconButton(onClick = onSettings) { Icon(Icons.Default.Settings, "Settings") } },
             )
         },
     ) { pad ->
@@ -103,32 +116,17 @@ fun HomeScreen(onProfiles: () -> Unit, onSettings: () -> Unit, onNewProfile: () 
             Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp),
             horizontalAlignment = Alignment.CenterHorizontally,
         ) {
-            Spacer(Modifier.height(24.dp))
+            Spacer(Modifier.height(16.dp))
             PowerButton(status, onClick = ::toggle)
             Spacer(Modifier.height(16.dp))
             Text(phaseLabel(status), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             status.message?.let {
                 Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error,
-                    modifier = Modifier.padding(top = 4.dp))
+                    textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
             }
             Spacer(Modifier.height(20.dp))
 
-            Card(Modifier.fillMaxWidth().clickable(onClick = onProfiles)) {
-                Column(Modifier.padding(16.dp)) {
-                    Text("Profile", style = MaterialTheme.typography.labelMedium)
-                    if (selected == null) {
-                        Text(if (profiles == null) "…" else "No profile yet — tap to add one", style = MaterialTheme.typography.titleMedium)
-                    } else {
-                        Text(selected.name, style = MaterialTheme.typography.titleMedium)
-                        val bits = listOfNotNull(
-                            selected.provider.label, selected.protocol.label,
-                            selected.country.takeIf { it.isNotBlank() }?.let { "${flagEmoji(it)} ${it.uppercase()}" },
-                            if (selected.sticky) "sticky ${selected.lifetimeMinutes}m" else "rotating",
-                        )
-                        Text(bits.joinToString(" · "), style = MaterialTheme.typography.bodyMedium)
-                    }
-                }
-            }
+            settings?.let { s -> LocationCard(s.location, catalog, account?.apiToken.isNullOrBlank(), ::setLocation) }
 
             if (status.isActive) {
                 Spacer(Modifier.height(12.dp))
@@ -151,6 +149,59 @@ fun HomeScreen(onProfiles: () -> Unit, onSettings: () -> Unit, onNewProfile: () 
             }
             Spacer(Modifier.height(24.dp))
         }
+    }
+}
+
+private enum class Picking { COUNTRY, STATE, CITY }
+
+@Composable
+private fun LocationCard(loc: Location, catalog: LocationCatalog, noToken: Boolean, onChange: (Location) -> Unit) {
+    var picking by remember { mutableStateOf<Picking?>(null) }
+    val country = catalog.country(loc.country)
+    val state = country?.states?.firstOrNull { it.code == loc.state }
+    val cities = (state?.cities?.takeIf { it.isNotEmpty() } ?: country?.cities).orEmpty()
+
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Text("Location", style = MaterialTheme.typography.labelMedium, modifier = Modifier.weight(1f).padding(top = 8.dp))
+                if (catalog.loading) CircularProgressIndicator(Modifier.size(14.dp), strokeWidth = 2.dp)
+            }
+            PickerRow("Country", if (loc.country.isEmpty()) "Any country" else "${flagEmoji(loc.country)}  ${loc.countryName}") {
+                picking = Picking.COUNTRY
+            }
+            if (loc.country.isNotEmpty() && (country?.states?.isNotEmpty() == true || loc.state.isNotEmpty())) {
+                PickerRow("State", loc.stateName.ifEmpty { "Any state" }) { picking = Picking.STATE }
+            }
+            if (loc.country.isNotEmpty()) {
+                PickerRow("City", loc.cityName.ifEmpty { "Any city" }) { picking = Picking.CITY }
+            }
+            val hint = when {
+                catalog.error != null -> catalog.error
+                noToken -> "Add your IPRoyal API token in Settings → Account to choose from the list of available cities."
+                else -> null
+            }
+            hint?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
+        }
+    }
+
+    when (picking) {
+        Picking.COUNTRY -> PlacePickerDialog("Country", "Any country", catalog.countries, allowCustom = false, showFlags = true,
+            onDismiss = { picking = null }) { p ->
+            picking = null
+            onChange(Location(country = p?.code.orEmpty(), countryName = p?.name.orEmpty()))
+        }
+        Picking.STATE -> PlacePickerDialog("State", "Any state", country?.states.orEmpty(), allowCustom = false,
+            onDismiss = { picking = null }) { p ->
+            picking = null
+            onChange(loc.copy(state = p?.code.orEmpty(), stateName = p?.name.orEmpty(), city = "", cityName = ""))
+        }
+        Picking.CITY -> PlacePickerDialog("City", "Any city", cities, allowCustom = cities.isEmpty() || noToken,
+            onDismiss = { picking = null }) { p ->
+            picking = null
+            onChange(loc.copy(city = p?.code.orEmpty(), cityName = p?.name.orEmpty()))
+        }
+        null -> Unit
     }
 }
 
