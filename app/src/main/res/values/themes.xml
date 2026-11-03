@@ -1,0 +1,4 @@
+<resources>
+    <style name="Theme.ResProxy" parent="android:Theme.Material.NoActionBar" />
+    <color name="ic_launcher_background">#1E6B45</color>
+</resources>
