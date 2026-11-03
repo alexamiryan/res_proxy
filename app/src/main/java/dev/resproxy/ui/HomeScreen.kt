@@ -145,10 +145,15 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
                 val hint = when {
                     account == null -> "Set up your ${provider.label} account to connect."
                     !locations.canFetch(account) && provider == Provider.IPROYAL ->
-                        "Add your IPRoyal API token in Settings → Account to choose from the list of available cities."
+                        "Add your IPRoyal API token in Settings → Accounts to choose from the list of available cities."
+                    !locations.canFetch(account) ->
+                        "Add your Geonode dashboard login in Settings → Accounts to choose from the list of states and cities."
                     else -> null
                 }
-                LocationCard(s.location, catalog, hint, freeTextCities = !locations.canFetch(account), ::setLocation)
+                val freeText = !locations.canFetch(account)
+                // Geonode targets states in every country; IPRoyal only in the US (built-in list).
+                LocationCard(s.location, catalog, hint, freeTextCities = freeText,
+                    freeTextStates = freeText && provider == Provider.GEONODE, onChange = ::setLocation)
             }
 
             if (status.isActive) {
@@ -180,7 +185,14 @@ private val PROVIDERS = listOf(Provider.IPROYAL, Provider.GEONODE)
 private enum class Picking { COUNTRY, STATE, CITY }
 
 @Composable
-private fun LocationCard(loc: Location, catalog: LocationCatalog, hint: String?, freeTextCities: Boolean, onChange: (Location) -> Unit) {
+private fun LocationCard(
+    loc: Location,
+    catalog: LocationCatalog,
+    hint: String?,
+    freeTextCities: Boolean,
+    freeTextStates: Boolean,
+    onChange: (Location) -> Unit,
+) {
     var picking by remember { mutableStateOf<Picking?>(null) }
     val country = catalog.country(loc.country)
     val state = country?.states?.firstOrNull { it.code == loc.state }
@@ -195,7 +207,7 @@ private fun LocationCard(loc: Location, catalog: LocationCatalog, hint: String?,
             PickerRow("Country", if (loc.country.isEmpty()) "Any country" else "${flagEmoji(loc.country)}  ${loc.countryName}") {
                 picking = Picking.COUNTRY
             }
-            if (loc.country.isNotEmpty() && (country?.states?.isNotEmpty() == true || loc.state.isNotEmpty())) {
+            if (loc.country.isNotEmpty() && (country?.states?.isNotEmpty() == true || loc.state.isNotEmpty() || freeTextStates)) {
                 PickerRow("State", loc.stateName.ifEmpty { "Any state" }) { picking = Picking.STATE }
             }
             if (loc.country.isNotEmpty()) {
@@ -211,7 +223,7 @@ private fun LocationCard(loc: Location, catalog: LocationCatalog, hint: String?,
             picking = null
             onChange(Location(country = p?.code.orEmpty(), countryName = p?.name.orEmpty()))
         }
-        Picking.STATE -> PlacePickerDialog("State", "Any state", country?.states.orEmpty(), allowCustom = false,
+        Picking.STATE -> PlacePickerDialog("State", "Any state", country?.states.orEmpty(), allowCustom = freeTextStates,
             onDismiss = { picking = null }) { p ->
             picking = null
             onChange(loc.copy(state = p?.code.orEmpty(), stateName = p?.name.orEmpty(), city = "", cityName = ""))

@@ -6,6 +6,8 @@ import android.app.NotificationManager
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import dev.resproxy.data.AccountRepository
+import dev.resproxy.data.AppSettings
+import dev.resproxy.data.BackupPayload
 import dev.resproxy.data.ChainRepository
 import dev.resproxy.data.Profile
 import dev.resproxy.data.SecretStore
@@ -18,6 +20,7 @@ import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import java.io.File
 
@@ -39,6 +42,24 @@ class AppContainer(context: Context) {
     fun locations(provider: Provider): ProviderLocations = locationCatalogs.getValue(provider)
     /** Completes once stored data has been migrated to the current schema. */
     val ready = CompletableDeferred<Unit>()
+
+    /** Snapshot for export; connection state is left out so the target starts disconnected. */
+    suspend fun exportBackup() = BackupPayload(
+        createdAt = System.currentTimeMillis(),
+        settings = settings.current().copy(wasConnected = false, sessionId = ""),
+        accounts = accounts.accounts.first().values.toList(),
+        chain = chain.get(),
+        apiKeys = settings.currentKeys(),
+    )
+
+    /** Replaces accounts, settings, API keys and the VPN chain with [b]. */
+    suspend fun importBackup(b: BackupPayload) {
+        accounts.replaceAll(b.accounts)
+        chain.save(b.chain)
+        settings.setKeys(b.apiKeys)
+        settings.update { b.settings.copy(wasConnected = false, sessionId = "", schema = AppSettings.SCHEMA) }
+        b.accounts.forEach { acc -> locationCatalogs[acc.provider]?.let { appScope.launch { it.refresh(acc, force = true) } } }
+    }
 
     /** Connection spec for the selected provider, or null when no account is set up. */
     suspend fun connectionProfile(sessionId: String? = null): Profile? {

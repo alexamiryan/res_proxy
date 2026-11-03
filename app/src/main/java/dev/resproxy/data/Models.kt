@@ -19,13 +19,18 @@ enum class TunnelMode { FULL, PROXY_ONLY }
 @Serializable
 enum class SplitMode { ALL, ONLY_SELECTED, EXCEPT_SELECTED }
 
-/** Provider login. [apiToken] (IPRoyal dashboard → Settings → API) is only used to fetch location lists. */
+/**
+ * Provider login. The API fields are only used to fetch location lists: IPRoyal wants a dashboard
+ * API token ([apiToken]); Geonode wants the dashboard login ([apiLogin] / [apiPassword]).
+ */
 @Serializable
 data class Account(
     val provider: Provider = Provider.IPROYAL,
     val username: String = "",
     val password: String = "",
     val apiToken: String = "",
+    val apiLogin: String = "",
+    val apiPassword: String = "",
 )
 
 /** Target location as provider codes; names are kept for display. Empty code = any. */

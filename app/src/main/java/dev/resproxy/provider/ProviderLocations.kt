@@ -62,7 +62,7 @@ class ProviderLocations(private val provider: Provider, private val cacheFile: F
     /** Whether [account] has what this provider's location API needs. */
     fun canFetch(account: Account?) = when (provider) {
         Provider.IPROYAL -> !account?.apiToken.isNullOrBlank()
-        Provider.GEONODE -> !account?.username.isNullOrBlank() && !account?.password.isNullOrBlank()
+        Provider.GEONODE -> !account?.apiLogin.isNullOrBlank() && !account?.apiPassword.isNullOrBlank()
         Provider.GENERIC -> false
     }
 
@@ -91,15 +91,15 @@ class ProviderLocations(private val provider: Provider, private val cacheFile: F
     private fun fetch(account: Account): String {
         val req = when (provider) {
             Provider.IPROYAL -> Request.Builder().url(IPROYAL_URL).header("Authorization", "Bearer ${account.apiToken.trim()}")
-            // Basic auth with the plain username (no targeting segments) and password.
+            // Basic auth with the Geonode dashboard login (not the proxy username).
             else -> Request.Builder().url(GEONODE_URL)
-                .header("Authorization", Credentials.basic(account.username.trim().substringBefore("-type-"), account.password.trim()))
+                .header("Authorization", Credentials.basic(account.apiLogin.trim(), account.apiPassword.trim()))
         }.header("Accept", "application/json").build()
         return http.newCall(req).execute().use { r ->
             if (r.code == 401 || r.code == 403) {
                 throw IOException(
                     if (provider == Provider.IPROYAL) "IPRoyal rejected the API token"
-                    else "Geonode rejected the username/password for the location list"
+                    else "Geonode rejected the dashboard login used for the location list"
                 )
             }
             if (!r.isSuccessful) throw IOException("${provider.label} API error ${r.code}")

@@ -194,6 +194,9 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit) {
             }
             Text("Measured on-device; providers' billing may count protocol overhead differently.", style = MaterialTheme.typography.labelSmall)
 
+            Header("Backup & transfer")
+            BackupSection()
+
             HorizontalDivider()
             Row(Modifier.fillMaxWidth().clickable { advanced = !advanced }, verticalAlignment = Alignment.CenterVertically) {
                 Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))

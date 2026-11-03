@@ -32,6 +32,13 @@ class AccountRepository(private val store: DataStore<Preferences>, private val s
         }
     }
 
+    /** Replaces all accounts (backup import). */
+    suspend fun replaceAll(accounts: List<Account>) {
+        store.edit { prefs ->
+            prefs[KEY] = secrets.encrypt(json.encodeToString(mapSerializer, accounts.associateBy { it.provider }))
+        }
+    }
+
     /** One-time import of credentials saved by the old profile editor; returns that profile's location. */
     suspend fun migrateLegacyProfiles(): Location? {
         var location: Location? = null

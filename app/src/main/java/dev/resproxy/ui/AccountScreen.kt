@@ -47,10 +47,15 @@ fun AccountScreen(provider: Provider, canGoBack: Boolean, onDone: () -> Unit) {
     var username by remember { mutableStateOf("") }
     var password by remember { mutableStateOf("") }
     var token by remember { mutableStateOf("") }
+    var apiLogin by remember { mutableStateOf("") }
+    var apiPassword by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
 
     LaunchedEffect(provider) {
-        c.accounts.get(provider)?.let { username = it.username; password = it.password; token = it.apiToken }
+        c.accounts.get(provider)?.let {
+            username = it.username; password = it.password; token = it.apiToken
+            apiLogin = it.apiLogin; apiPassword = it.apiPassword
+        }
         loaded = true
     }
 
@@ -112,13 +117,24 @@ fun AccountScreen(provider: Provider, canGoBack: Boolean, onDone: () -> Unit) {
                     visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
                 )
             } else {
-                Text("Geonode's list of countries, states and cities is loaded with these same credentials.",
-                    style = MaterialTheme.typography.bodySmall)
+                Section("Location lists (optional)")
+                Text(
+                    "Geonode's API for the list of available states and cities uses your dashboard login " +
+                        "(the email and password for app.geonode.com). Without it you can still pick any country and type a state or city.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(apiLogin, { apiLogin = it.trim() }, label = { Text("Dashboard login (email)") }, singleLine = true,
+                    modifier = Modifier.fillMaxWidth())
+                OutlinedTextField(
+                    apiPassword, { apiPassword = it }, label = { Text("Dashboard password") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                )
             }
             Button(
                 onClick = {
                     scope.launch {
-                        val acc = Account(provider, username, password, if (provider == Provider.IPROYAL) token else "")
+                        val acc = if (provider == Provider.IPROYAL) Account(provider, username, password, apiToken = token)
+                        else Account(provider, username, password, apiLogin = apiLogin, apiPassword = apiPassword)
                         c.accounts.save(acc)
                         c.appScope.launch { c.locations(provider).refresh(acc, force = true) }
                         onDone()
