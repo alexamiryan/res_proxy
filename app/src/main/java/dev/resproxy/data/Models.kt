@@ -42,14 +42,17 @@ data class Location(
         get() = listOf(cityName, stateName, countryName).filter { it.isNotBlank() }.joinToString(", ").ifEmpty { "Any location" }
 }
 
+@Serializable
+data class Gateway(val host: String = "", val port: Int = 0)
+
 /** Technical options, all in Settings → Advanced. */
 @Serializable
 data class ConnectionSettings(
     val protocol: Protocol = Protocol.SOCKS5,
     val sticky: Boolean = true,
     val lifetimeMinutes: Int = 1440,
-    val hostOverride: String = "",
-    val portOverride: Int = 0,
+    /** Per-provider gateway override; empty host / 0 port = preset default. */
+    val gateways: Map<Provider, Gateway> = emptyMap(),
     val tunnelMode: TunnelMode = TunnelMode.FULL,
     val splitMode: SplitMode = SplitMode.ALL,
     val apps: Set<String> = emptySet(),
@@ -85,8 +88,8 @@ data class Profile(
             name = account.provider.label,
             provider = account.provider,
             protocol = s.connection.protocol,
-            host = s.connection.hostOverride,
-            port = s.connection.portOverride,
+            host = s.connection.gateways[account.provider]?.host.orEmpty(),
+            port = s.connection.gateways[account.provider]?.port ?: 0,
             username = account.username,
             password = account.password,
             country = s.location.country,
@@ -132,6 +135,8 @@ data class AppSettings(
     val rotateThreshold: Verdict = Verdict.SUSPICIOUS,
     val maxRotations: Int = 10,
     val healthIntervalSec: Int = 30,
+    /** Last location used with each provider, restored when switching back. */
+    val savedLocations: Map<Provider, Location> = emptyMap(),
     /** Route the upstream proxy connection through the imported WireGuard VPN ([VpnChain]). */
     val chainEnabled: Boolean = false,
 ) {

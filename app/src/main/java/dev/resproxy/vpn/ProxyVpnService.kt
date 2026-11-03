@@ -122,7 +122,7 @@ class ProxyVpnService : VpnService() {
                 container.settings.update { it.copy(sessionId = Presets.newSessionId()) }
                 s = container.settings.current()
             }
-            val p = container.connectionProfile() ?: return fail("Add your IPRoyal account first")
+            val p = container.connectionProfile() ?: return fail("Add your ${s.provider.label} account first")
             profile = p
             TunnelState.update {
                 TunnelStatus(phase = Phase.CONNECTING, profileId = p.id, profileName = displayName(p, s.location.label), sessionId = p.sessionId)

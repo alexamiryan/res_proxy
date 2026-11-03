@@ -35,6 +35,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -51,6 +52,7 @@ import dev.resproxy.container
 import dev.resproxy.data.ApiKeys
 import dev.resproxy.data.AppSettings
 import dev.resproxy.data.ConnectionSettings
+import dev.resproxy.data.Gateway
 import dev.resproxy.data.Profile
 import dev.resproxy.data.Protocol
 import dev.resproxy.data.Provider
@@ -63,18 +65,19 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
+fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit) {
     val ctx = LocalContext.current
     val scope = rememberCoroutineScope()
     val c = ctx.container
     val settings by c.settings.settings.collectAsState(initial = null)
-    val account by c.accounts.account(Provider.IPROYAL).collectAsState(initial = null)
+    val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
     val usage by c.stats.totals.collectAsState(initial = emptyMap())
     val status by TunnelState.status.collectAsState()
     var keys by remember { mutableStateOf<ApiKeys?>(null) }
     var keysSaved by remember { mutableStateOf(false) }
     var advanced by rememberSaveable { mutableStateOf(false) }
     var pickingApps by remember { mutableStateOf(false) }
+    var gatewayPicks by remember { mutableStateOf(0) }
     LaunchedEffect(Unit) { keys = c.settings.currentKeys() }
 
     fun update(f: (AppSettings) -> AppSettings) = scope.launch { c.settings.update(f) }
@@ -99,16 +102,23 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
             Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
-            Header("Account")
-            Row(Modifier.fillMaxWidth().clickable(onClick = onAccount), verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("IPRoyal")
-                    Text(
-                        account?.let { a -> a.username + if (a.apiToken.isNotBlank()) " · API token set" else " · no API token" } ?: "Not set up",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+            Header("Accounts")
+            for (p in listOf(Provider.IPROYAL, Provider.GEONODE)) {
+                val a = accounts[p]
+                Row(Modifier.fillMaxWidth().clickable { onAccount(p) }, verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(p.label + if (p == s.provider) " (selected)" else "")
+                        Text(
+                            when {
+                                a == null -> "Not set up"
+                                p == Provider.IPROYAL -> a.username + if (a.apiToken.isNotBlank()) " · API token set" else " · no API token"
+                                else -> a.username
+                            },
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    TextButton(onClick = { onAccount(p) }) { Text(if (a == null) "Set up" else "Edit") }
                 }
-                TextButton(onClick = onAccount) { Text("Edit") }
             }
 
             Header("Protection")
@@ -169,18 +179,20 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
             }
 
             Header("Data used")
-            val u = usage[Provider.IPROYAL.name]
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) {
-                    Text("IPRoyal")
-                    Text(
-                        "↓ ${formatBytes(u?.rxBytes ?: 0)}  ↑ ${formatBytes(u?.txBytes ?: 0)}  total ${formatBytes((u?.rxBytes ?: 0) + (u?.txBytes ?: 0))}",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
+            for (p in listOf(Provider.IPROYAL, Provider.GEONODE).filter { it in accounts || usage[it.name] != null }) {
+                val u = usage[p.name]
+                Row(verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) {
+                        Text(p.label)
+                        Text(
+                            "↓ ${formatBytes(u?.rxBytes ?: 0)}  ↑ ${formatBytes(u?.txBytes ?: 0)}  total ${formatBytes((u?.rxBytes ?: 0) + (u?.txBytes ?: 0))}",
+                            style = MaterialTheme.typography.bodySmall,
+                        )
+                    }
+                    OutlinedButton(onClick = { scope.launch { c.stats.reset(p.name) } }) { Text("Reset") }
                 }
-                OutlinedButton(onClick = { scope.launch { c.stats.reset(Provider.IPROYAL.name) } }) { Text("Reset") }
             }
-            Text("Measured on-device; IPRoyal's billing may count protocol overhead differently.", style = MaterialTheme.typography.labelSmall)
+            Text("Measured on-device; providers' billing may count protocol overhead differently.", style = MaterialTheme.typography.labelSmall)
 
             HorizontalDivider()
             Row(Modifier.fillMaxWidth().clickable { advanced = !advanced }, verticalAlignment = Alignment.CenterVertically) {
@@ -199,11 +211,22 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
                     updateConn { it.copy(sticky = v) }
                 }
                 if (cs.sticky) NumberField("Session lifetime (minutes)", cs.lifetimeMinutes) { v -> updateConn { it.copy(lifetimeMinutes = v) } }
-                Section("Gateway")
+                Section("Gateway (${s.provider.label})")
                 val preset = Presets.of(s.provider)
-                TextSetting("Host", cs.hostOverride, placeholder = preset.defaultHost) { v -> updateConn { it.copy(hostOverride = v.trim()) } }
-                NumberField("Port (0 = default ${preset.defaultPort(cs.protocol, cs.sticky)})", cs.portOverride) { v ->
-                    updateConn { it.copy(portOverride = v) }
+                val gw = cs.gateways[s.provider] ?: Gateway()
+                fun setGw(g: Gateway) = updateConn { it.copy(gateways = it.gateways + (s.provider to g)) }
+                if (s.provider == Provider.GEONODE) {
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        listOf("" to "France", "us.proxy.geonode.io" to "US", "sg.proxy.geonode.io" to "Singapore").forEach { (h, label) ->
+                            FilterChip(gw.host == h, { setGw(gw.copy(host = h)); gatewayPicks++ }, label = { Text(label) })
+                        }
+                    }
+                }
+                key(s.provider, gatewayPicks) {
+                    TextSetting("Host", gw.host, placeholder = preset.defaultHost) { v -> setGw(gw.copy(host = v.trim())) }
+                }
+                key(s.provider) {
+                    NumberField("Port (0 = default ${preset.defaultPort(cs.protocol, cs.sticky)})", gw.port) { v -> setGw(gw.copy(port = v)) }
                 }
                 Section("Routing")
                 Choice(TunnelMode.entries, cs.tunnelMode, { if (it == TunnelMode.FULL) "All traffic" else "Proxy only" }) { v ->
@@ -221,7 +244,7 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
                     OutlinedButton(onClick = { pickingApps = true }, modifier = Modifier.fillMaxWidth()) { Text("Choose apps (${cs.apps.size} selected)") }
                 }
                 NumberField("Health check interval (seconds)", s.healthIntervalSec) { v -> update { it.copy(healthIntervalSec = v) } }
-                account?.let { CredentialPreview(Profile.from(it, s, s.sessionId.ifEmpty { "xxxxxxxx" }), it.password) }
+                accounts[s.provider]?.let { CredentialPreview(Profile.from(it, s, s.sessionId.ifEmpty { "xxxxxxxx" }), it.password) }
             }
         }
     }

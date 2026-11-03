@@ -4,7 +4,7 @@ import dev.resproxy.data.Account
 import dev.resproxy.data.AppSettings
 import dev.resproxy.data.Location
 import dev.resproxy.data.Provider
-import dev.resproxy.provider.IpRoyalLocations
+import dev.resproxy.provider.ProviderLocations
 import dev.resproxy.provider.Presets
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -27,7 +27,7 @@ class LocationsTest {
     """.trimIndent()
 
     @Test fun parsesCountriesStatesCities() {
-        val list = IpRoyalLocations.parse(body)
+        val list = ProviderLocations.parseIpRoyal(body)
         assertEquals(listOf("am", "us"), list.map { it.code })
         val us = list.first { it.code == "us" }
         assertEquals(listOf("California", "Iowa"), us.states.map { it.name })
@@ -36,8 +36,44 @@ class LocationsTest {
         assertTrue(list.first { it.code == "am" }.states.isEmpty())
     }
 
+    // Shape of Geonode's GET monitor.geonode.com/services/RESIDENTIAL-PREMIUM/targeting-options.
+    private val geonode = """
+        {"countries":[
+          {"code":"de","name":"Germany","asns":[{"code":"3320","name":"Deutsche Telekom AG"}],
+           "states":[{"code":"badenwurttemberg","name":"Baden-Württemberg","cities":[{"code":"aalen","name":"Aalen"},{"code":"stuttgart","name":"Stuttgart"}]},
+                     {"code":"bavaria","name":"Bavaria","cities":[{"code":"munich","name":"Munich"}]}]},
+          {"code":"US","name":"United States","asns":[],"states":[{"code":"alabama","name":"Alabama","cities":[{"code":"birmingham","name":"Birmingham"}]}]}
+        ]}
+    """.trimIndent()
+
+    @Test fun parsesGeonodeTargetingOptions() {
+        val list = ProviderLocations.parseGeonode(geonode)
+        assertEquals(listOf("de", "us"), list.map { it.code })
+        val de = list.first()
+        assertEquals(listOf("badenwurttemberg", "bavaria"), de.states.map { it.code })
+        assertEquals(listOf("Aalen", "Munich", "Stuttgart"), de.cities.map { it.name })
+    }
+
+    @Test fun geonodeAccountBuildsUsernameAndGateway() {
+        val s = AppSettings(
+            provider = Provider.GEONODE,
+            location = Location(country = "de", state = "badenwurttemberg", city = "aalen"),
+            connection = dev.resproxy.data.ConnectionSettings(
+                gateways = mapOf(Provider.GEONODE to dev.resproxy.data.Gateway("us.proxy.geonode.io")),
+            ),
+        )
+        val ep = Presets.build(dev.resproxy.data.Profile.from(Account(Provider.GEONODE, "geonode_abc", "pw"), s, "ab12cd34"))
+        assertEquals("us.proxy.geonode.io", ep.host)
+        assertEquals(12000, ep.port)
+        assertEquals("geonode_abc-type-residential-country-de-state-badenwurttemberg-city-aalen-session-ab12cd34-lifetime-1440", ep.username)
+        assertEquals("pw", ep.password)
+        // IPRoyal's gateway override doesn't leak into Geonode and vice versa.
+        val ip = Presets.build(dev.resproxy.data.Profile.from(Account(Provider.IPROYAL, "u", "p"), s.copy(provider = Provider.IPROYAL), "x"))
+        assertEquals("geo.iproyal.com", ip.host)
+    }
+
     @Test fun builtInHasCountriesAndUsStates() {
-        val c = IpRoyalLocations.builtIn()
+        val c = ProviderLocations.builtIn()
         assertTrue(c.countries.size > 200)
         val us = c.country("us")!!
         assertEquals("United States", us.name)

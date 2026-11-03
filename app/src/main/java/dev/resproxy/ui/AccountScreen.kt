@@ -39,7 +39,7 @@ import kotlinx.coroutines.launch
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun AccountScreen(canGoBack: Boolean, onDone: () -> Unit) {
+fun AccountScreen(provider: Provider, canGoBack: Boolean, onDone: () -> Unit) {
     val ctx = LocalContext.current
     val c = ctx.container
     val scope = rememberCoroutineScope()
@@ -49,15 +49,15 @@ fun AccountScreen(canGoBack: Boolean, onDone: () -> Unit) {
     var token by remember { mutableStateOf("") }
     var showPassword by remember { mutableStateOf(false) }
 
-    LaunchedEffect(Unit) {
-        c.accounts.get(Provider.IPROYAL)?.let { username = it.username; password = it.password; token = it.apiToken }
+    LaunchedEffect(provider) {
+        c.accounts.get(provider)?.let { username = it.username; password = it.password; token = it.apiToken }
         loaded = true
     }
 
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("IPRoyal account") },
+                title = { Text("${provider.label} account") },
                 navigationIcon = {
                     if (canGoBack) IconButton(onClick = onDone) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") }
                 },
@@ -70,8 +70,12 @@ fun AccountScreen(canGoBack: Boolean, onDone: () -> Unit) {
             verticalArrangement = Arrangement.spacedBy(12.dp),
         ) {
             Text(
-                "Use the proxy username and password from your IPRoyal dashboard (Residential → Proxy access) — " +
-                    "not your website login. You can also paste the whole proxy line (host:port:username:password).",
+                when (provider) {
+                    Provider.IPROYAL -> "Use the proxy username and password from your IPRoyal dashboard (Residential → Proxy access) — " +
+                        "not your website login."
+                    else -> "Use the proxy username and password from your Geonode dashboard (Proxies → Residential), " +
+                        "usually a username like geonode_abc123."
+                } + " You can also paste the whole proxy line (host:port:username:password).",
                 style = MaterialTheme.typography.bodyMedium,
             )
             OutlinedTextField(
@@ -96,21 +100,27 @@ fun AccountScreen(canGoBack: Boolean, onDone: () -> Unit) {
                 },
                 modifier = Modifier.fillMaxWidth(),
             )
-            Section("Location lists (optional)")
-            Text(
-                "IPRoyal only shares its list of available states and cities with an API token " +
-                    "(dashboard → Settings → API). Without it you can still pick any country and US state, and type a city.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            OutlinedTextField(
-                token, { token = it.trim() }, label = { Text("API token") }, singleLine = true,
-                visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
-            )
+            if (provider == Provider.IPROYAL) {
+                Section("Location lists (optional)")
+                Text(
+                    "IPRoyal only shares its list of available states and cities with an API token " +
+                        "(dashboard → Settings → API). Without it you can still pick any country and US state, and type a city.",
+                    style = MaterialTheme.typography.bodySmall,
+                )
+                OutlinedTextField(
+                    token, { token = it.trim() }, label = { Text("API token") }, singleLine = true,
+                    visualTransformation = PasswordVisualTransformation(), modifier = Modifier.fillMaxWidth(),
+                )
+            } else {
+                Text("Geonode's list of countries, states and cities is loaded with these same credentials.",
+                    style = MaterialTheme.typography.bodySmall)
+            }
             Button(
                 onClick = {
                     scope.launch {
-                        c.accounts.save(Account(Provider.IPROYAL, username, password, token))
-                        c.appScope.launch { c.ipRoyalLocations.refresh(token, force = true) }
+                        val acc = Account(provider, username, password, if (provider == Provider.IPROYAL) token else "")
+                        c.accounts.save(acc)
+                        c.appScope.launch { c.locations(provider).refresh(acc, force = true) }
                         onDone()
                     }
                 },
@@ -122,7 +132,7 @@ fun AccountScreen(canGoBack: Boolean, onDone: () -> Unit) {
     }
 }
 
-/** `host:port:user:pass` or `user:pass@host:port` (as IPRoyal shows them) → (user, pass). */
+/** `host:port:user:pass` or `user:pass@host:port` (as providers show them) → (user, pass). */
 internal fun parseProxyLine(text: String): Pair<String, String>? {
     val t = text.trim().removePrefix("socks5://").removePrefix("http://")
     Regex("""^[^\s:@]+\.[^\s:@]+:\d+:([^\s:]+):(\S+)$""").find(t)?.let { return it.groupValues[1] to it.groupValues[2] }

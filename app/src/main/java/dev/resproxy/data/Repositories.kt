@@ -83,6 +83,17 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
         }
     }
 
+    /** Switches provider, remembering each provider's last location. */
+    suspend fun switchProvider(to: Provider) = update { s ->
+        if (s.provider == to) s
+        else s.copy(
+            provider = to,
+            location = s.savedLocations[to] ?: Location(),
+            savedLocations = s.savedLocations + (s.provider to s.location),
+            sessionId = "",
+        )
+    }
+
     /** Persists the schema upgrade, adopting [legacyLocation] if no location is set yet. */
     suspend fun migrate(legacyLocation: Location?) = update { s ->
         if (legacyLocation != null && s.location == Location()) s.copy(location = legacyLocation) else s

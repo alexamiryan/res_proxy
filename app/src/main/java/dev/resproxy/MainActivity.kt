@@ -46,19 +46,20 @@ class MainActivity : ComponentActivity() {
                 val ready by produceState(false) { container.ready.await(); value = true }
                 val accounts by container.accounts.accounts.collectAsState(initial = null)
                 val loaded = accounts?.takeIf { ready } ?: return@ResProxyTheme
-                val start = remember { if (Provider.IPROYAL in loaded) "home" else "account" }
+                val start = remember { if (loaded.isNotEmpty()) "home" else "account/${Provider.IPROYAL.name}" }
                 val nav = rememberNavController()
                 NavHost(nav, startDestination = start) {
                     composable("home") {
-                        HomeScreen(onSettings = { nav.navigate("settings") }, onAccount = { nav.navigate("account") })
+                        HomeScreen(onSettings = { nav.navigate("settings") }, onAccount = { p -> nav.navigate("account/${p.name}") })
                     }
-                    composable("account") {
-                        AccountScreen(canGoBack = nav.previousBackStackEntry != null) {
-                            if (!nav.popBackStack()) nav.navigate("home") { popUpTo("account") { inclusive = true } }
+                    composable("account/{provider}") { entry ->
+                        val provider = Provider.valueOf(entry.arguments?.getString("provider") ?: Provider.IPROYAL.name)
+                        AccountScreen(provider, canGoBack = nav.previousBackStackEntry != null) {
+                            if (!nav.popBackStack()) nav.navigate("home") { popUpTo(0) }
                         }
                     }
                     composable("settings") {
-                        SettingsScreen(onBack = { nav.popBackStack() }, onAccount = { nav.navigate("account") })
+                        SettingsScreen(onBack = { nav.popBackStack() }, onAccount = { p -> nav.navigate("account/${p.name}") })
                     }
                 }
             }

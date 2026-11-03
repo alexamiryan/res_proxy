@@ -1,5 +1,8 @@
 package dev.resproxy.provider
 
+import dev.resproxy.data.Account
+import dev.resproxy.data.Provider
+import dev.resproxy.net.Resolver
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -10,11 +13,12 @@ import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
-import dev.resproxy.net.Resolver
+import okhttp3.Credentials
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import java.io.File
@@ -22,7 +26,7 @@ import java.io.IOException
 import java.util.Locale
 import java.util.concurrent.TimeUnit
 
-/** A selectable location; codes are what goes into the proxy password (`_country-us`, `_state-iowa`, …). */
+/** A selectable location; codes are what goes into the proxy credentials (`country-us`, `state-iowa`, …). */
 @Serializable
 data class Place(
     val code: String,
@@ -44,10 +48,10 @@ data class LocationCatalog(
 }
 
 /**
- * IPRoyal's targetable countries / states / cities. The live list needs the dashboard API token;
- * without one we fall back to ISO countries + US states (cities then become free text).
+ * A provider's targetable countries / states / cities, fetched from its API and cached for a day.
+ * Without usable credentials it falls back to ISO countries + US states (cities become free text).
  */
-class IpRoyalLocations(private val cacheFile: File) {
+class ProviderLocations(private val provider: Provider, private val cacheFile: File) {
 
     private val http = OkHttpClient.Builder().dns(Resolver).callTimeout(30, TimeUnit.SECONDS).build()
     private val listSerializer = ListSerializer(Place.serializer())
@@ -55,10 +59,16 @@ class IpRoyalLocations(private val cacheFile: File) {
     private val _catalog = MutableStateFlow(loadCache() ?: builtIn())
     val catalog: StateFlow<LocationCatalog> = _catalog.asStateFlow()
 
-    /** Refreshes from the API when a token is set and the cache is older than a day (or [force]). */
-    suspend fun refresh(apiToken: String, force: Boolean = false) {
-        val token = apiToken.trim()
-        if (token.isEmpty()) {
+    /** Whether [account] has what this provider's location API needs. */
+    fun canFetch(account: Account?) = when (provider) {
+        Provider.IPROYAL -> !account?.apiToken.isNullOrBlank()
+        Provider.GEONODE -> !account?.username.isNullOrBlank() && !account?.password.isNullOrBlank()
+        Provider.GENERIC -> false
+    }
+
+    /** Refreshes from the API when possible and the cache is older than a day (or [force]). */
+    suspend fun refresh(account: Account?, force: Boolean = false) {
+        if (!canFetch(account)) {
             if (_catalog.value.source != CatalogSource.BUILT_IN) _catalog.value = builtIn()
             return
         }
@@ -66,16 +76,8 @@ class IpRoyalLocations(private val cacheFile: File) {
         if (!force && cur.source != CatalogSource.BUILT_IN && System.currentTimeMillis() - cur.fetchedAt < DAY_MS) return
         _catalog.update { it.copy(loading = true, error = null) }
         try {
-            val body = withContext(Dispatchers.IO) {
-                val req = Request.Builder().url(URL).header("Authorization", "Bearer $token").header("Accept", "application/json").build()
-                http.newCall(req).execute().use { r ->
-                    if (r.code == 401 || r.code == 403) throw IOException("IPRoyal rejected the API token")
-                    if (!r.isSuccessful) throw IOException("IPRoyal API error ${r.code}")
-                    r.body?.string().orEmpty()
-                }
-            }
-            val countries = parse(body)
-            if (countries.isEmpty()) throw IOException("IPRoyal returned no locations")
+            val countries = withContext(Dispatchers.IO) { parse(provider, fetch(account!!)) }
+            if (countries.isEmpty()) throw IOException("${provider.label} returned no locations")
             val now = System.currentTimeMillis()
             withContext(Dispatchers.IO) {
                 runCatching { cacheFile.writeText("$now\n" + json.encodeToString(listSerializer, countries)) }
@@ -86,6 +88,25 @@ class IpRoyalLocations(private val cacheFile: File) {
         }
     }
 
+    private fun fetch(account: Account): String {
+        val req = when (provider) {
+            Provider.IPROYAL -> Request.Builder().url(IPROYAL_URL).header("Authorization", "Bearer ${account.apiToken.trim()}")
+            // Basic auth with the plain username (no targeting segments) and password.
+            else -> Request.Builder().url(GEONODE_URL)
+                .header("Authorization", Credentials.basic(account.username.trim().substringBefore("-type-"), account.password.trim()))
+        }.header("Accept", "application/json").build()
+        return http.newCall(req).execute().use { r ->
+            if (r.code == 401 || r.code == 403) {
+                throw IOException(
+                    if (provider == Provider.IPROYAL) "IPRoyal rejected the API token"
+                    else "Geonode rejected the username/password for the location list"
+                )
+            }
+            if (!r.isSuccessful) throw IOException("${provider.label} API error ${r.code}")
+            r.body?.string().orEmpty()
+        }
+    }
+
     private fun loadCache(): LocationCatalog? = runCatching {
         val text = cacheFile.takeIf { it.exists() }?.readText() ?: return null
         val ts = text.substringBefore('\n').toLong()
@@ -93,31 +114,48 @@ class IpRoyalLocations(private val cacheFile: File) {
     }.getOrNull()
 
     companion object {
-        private const val URL = "https://resi-api.iproyal.com/v1/access/countries"
+        private const val IPROYAL_URL = "https://resi-api.iproyal.com/v1/access/countries"
+        private const val GEONODE_URL = "https://monitor.geonode.com/services/RESIDENTIAL-PREMIUM/targeting-options"
         private const val DAY_MS = 24 * 60 * 60 * 1000L
         private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
-        /** Parses `/v1/access/countries`, dropping ISPs. */
-        fun parse(body: String): List<Place> {
+        fun parse(provider: Provider, body: String): List<Place> = when (provider) {
+            Provider.IPROYAL -> parseIpRoyal(body)
+            else -> parseGeonode(body)
+        }
+
+        /** IPRoyal `/v1/access/countries`: options lists wrapped in `{prefix, options}`; ISPs dropped. */
+        fun parseIpRoyal(body: String): List<Place> {
             val root = json.parseToJsonElement(body).jsonObject
-            return options(root["countries"]).map { c ->
+            return array(root["countries"]).map { c ->
                 Place(
                     code = c.str("code"), name = c.str("name"),
-                    states = options(c.obj("states")?.get("options")).map { s ->
-                        Place(s.str("code"), s.str("name"), cities = cities(s))
+                    states = array(c.obj("states")?.get("options")).map { s ->
+                        Place(s.str("code"), s.str("name"), cities = places(s.obj("cities")?.get("options")))
                     }.sortedBy { it.name },
-                    cities = cities(c),
+                    cities = places(c.obj("cities")?.get("options")),
                 )
             }.filter { it.code.isNotEmpty() }.sortedBy { it.name }
         }
 
-        private fun cities(o: JsonObject) =
-            options(o.obj("cities")?.get("options")).map { Place(it.str("code"), it.str("name")) }
-                .filter { it.code.isNotEmpty() }.sortedBy { it.name }
+        /** Geonode `targeting-options`: plain arrays, cities nested under states; ASNs dropped. */
+        fun parseGeonode(body: String): List<Place> {
+            val root = json.parseToJsonElement(body).jsonObject
+            return array(root["countries"]).map { c ->
+                val states = array(c["states"]).map { s -> Place(s.str("code").lowercase(), s.str("name"), cities = places(s["cities"])) }
+                    .filter { it.code.isNotEmpty() }.sortedBy { it.name }
+                Place(
+                    code = c.str("code").lowercase(), name = c.str("name"), states = states,
+                    // "Any state" + city: offer every city in the country.
+                    cities = states.flatMap { it.cities }.distinctBy { it.code }.sortedBy { it.name },
+                )
+            }.filter { it.code.isNotEmpty() }.sortedBy { it.name }
+        }
 
-        private fun options(e: kotlinx.serialization.json.JsonElement?): List<JsonObject> =
-            (e as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
+        private fun places(e: JsonElement?) =
+            array(e).map { Place(it.str("code").lowercase(), it.str("name")) }.filter { it.code.isNotEmpty() }.sortedBy { it.name }
 
+        private fun array(e: JsonElement?): List<JsonObject> = (e as? JsonArray)?.mapNotNull { it as? JsonObject } ?: emptyList()
         private fun JsonObject.obj(k: String) = this[k] as? JsonObject
         private fun JsonObject.str(k: String) = (this[k] as? JsonPrimitive)?.contentOrNull.orEmpty()
 

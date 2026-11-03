@@ -74,16 +74,19 @@ import dev.resproxy.vpn.TunnelStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onSettings: () -> Unit, onAccount: () -> Unit) {
+fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
     val ctx = LocalContext.current
     val c = ctx.container
     val scope = rememberCoroutineScope()
     val status by TunnelState.status.collectAsState()
     val settings by c.settings.settings.collectAsState(initial = null)
-    val account by c.accounts.account(Provider.IPROYAL).collectAsState(initial = null)
-    val catalog by c.ipRoyalLocations.catalog.collectAsState()
+    val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
+    val provider = settings?.provider ?: Provider.IPROYAL
+    val account = accounts[provider]
+    val locations = c.locations(provider)
+    val catalog by locations.catalog.collectAsState()
 
-    LaunchedEffect(account?.apiToken) { account?.let { c.ipRoyalLocations.refresh(it.apiToken) } }
+    LaunchedEffect(provider, account) { locations.refresh(account) }
 
     val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
         if (it.resultCode == Activity.RESULT_OK) TunnelController.connect(ctx)
@@ -92,7 +95,7 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: () -> Unit) {
     fun toggle() {
         when {
             status.isActive -> TunnelController.disconnect(ctx)
-            account == null -> onAccount()
+            account == null -> onAccount(provider)
             else -> VpnService.prepare(ctx)?.let { consent.launch(it) } ?: TunnelController.connect(ctx)
         }
     }
@@ -126,7 +129,27 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: () -> Unit) {
             }
             Spacer(Modifier.height(20.dp))
 
-            settings?.let { s -> LocationCard(s.location, catalog, account?.apiToken.isNullOrBlank(), ::setLocation) }
+            Choice(PROVIDERS, provider, { it.label }) { p ->
+                scope.launch {
+                    c.settings.switchProvider(p)
+                    if (accounts[p] == null) {
+                        TunnelController.disconnect(ctx)
+                        onAccount(p)
+                    } else {
+                        TunnelController.applyLocation(ctx)
+                    }
+                }
+            }
+            Spacer(Modifier.height(12.dp))
+            settings?.let { s ->
+                val hint = when {
+                    account == null -> "Set up your ${provider.label} account to connect."
+                    !locations.canFetch(account) && provider == Provider.IPROYAL ->
+                        "Add your IPRoyal API token in Settings → Account to choose from the list of available cities."
+                    else -> null
+                }
+                LocationCard(s.location, catalog, hint, freeTextCities = !locations.canFetch(account), ::setLocation)
+            }
 
             if (status.isActive) {
                 Spacer(Modifier.height(12.dp))
@@ -152,10 +175,12 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: () -> Unit) {
     }
 }
 
+private val PROVIDERS = listOf(Provider.IPROYAL, Provider.GEONODE)
+
 private enum class Picking { COUNTRY, STATE, CITY }
 
 @Composable
-private fun LocationCard(loc: Location, catalog: LocationCatalog, noToken: Boolean, onChange: (Location) -> Unit) {
+private fun LocationCard(loc: Location, catalog: LocationCatalog, hint: String?, freeTextCities: Boolean, onChange: (Location) -> Unit) {
     var picking by remember { mutableStateOf<Picking?>(null) }
     val country = catalog.country(loc.country)
     val state = country?.states?.firstOrNull { it.code == loc.state }
@@ -176,12 +201,7 @@ private fun LocationCard(loc: Location, catalog: LocationCatalog, noToken: Boole
             if (loc.country.isNotEmpty()) {
                 PickerRow("City", loc.cityName.ifEmpty { "Any city" }) { picking = Picking.CITY }
             }
-            val hint = when {
-                catalog.error != null -> catalog.error
-                noToken -> "Add your IPRoyal API token in Settings → Account to choose from the list of available cities."
-                else -> null
-            }
-            hint?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
+            (catalog.error ?: hint)?.let { Text(it, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(bottom = 8.dp)) }
         }
     }
 
@@ -196,7 +216,7 @@ private fun LocationCard(loc: Location, catalog: LocationCatalog, noToken: Boole
             picking = null
             onChange(loc.copy(state = p?.code.orEmpty(), stateName = p?.name.orEmpty(), city = "", cityName = ""))
         }
-        Picking.CITY -> PlacePickerDialog("City", "Any city", cities, allowCustom = cities.isEmpty() || noToken,
+        Picking.CITY -> PlacePickerDialog("City", "Any city", cities, allowCustom = cities.isEmpty() || freeTextCities,
             onDismiss = { picking = null }) { p ->
             picking = null
             onChange(loc.copy(city = p?.code.orEmpty(), cityName = p?.name.orEmpty()))

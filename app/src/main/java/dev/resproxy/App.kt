@@ -11,7 +11,8 @@ import dev.resproxy.data.Profile
 import dev.resproxy.data.SecretStore
 import dev.resproxy.data.SettingsRepository
 import dev.resproxy.data.StatsRepository
-import dev.resproxy.provider.IpRoyalLocations
+import dev.resproxy.data.Provider
+import dev.resproxy.provider.ProviderLocations
 import dev.resproxy.reputation.ReputationRepository
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.CoroutineScope
@@ -30,7 +31,12 @@ class AppContainer(context: Context) {
     val stats = StatsRepository(context.dataStore)
     val chain = ChainRepository(context.dataStore, secrets)
     val reputation = ReputationRepository(settings)
-    val ipRoyalLocations = IpRoyalLocations(File(context.filesDir, "iproyal_locations.json"))
+    private val locationCatalogs = mapOf(
+        Provider.IPROYAL to ProviderLocations(Provider.IPROYAL, File(context.filesDir, "iproyal_locations.json")),
+        Provider.GEONODE to ProviderLocations(Provider.GEONODE, File(context.filesDir, "geonode_locations.json")),
+    )
+
+    fun locations(provider: Provider): ProviderLocations = locationCatalogs.getValue(provider)
     /** Completes once stored data has been migrated to the current schema. */
     val ready = CompletableDeferred<Unit>()
 
