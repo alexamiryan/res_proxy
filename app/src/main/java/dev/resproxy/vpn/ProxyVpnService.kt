@@ -26,6 +26,8 @@ import dev.resproxy.net.LocalSocksServer
 import dev.resproxy.net.ProxyAuthException
 import dev.resproxy.net.ProxyProbe
 import dev.resproxy.net.Upstream
+import dev.resproxy.net.WireGuard
+import dev.resproxy.net.WireGuardConfig
 import dev.resproxy.provider.Presets
 import dev.resproxy.reputation.ReputationReport
 import dev.resproxy.ui.formatBytes
@@ -62,6 +64,8 @@ class ProxyVpnService : VpnService() {
     private var socksBridge: LocalSocksServer? = null
     private var hevRunning = false
     private var profile: Profile? = null
+    /** Set when the upstream proxy is reached through the imported WireGuard VPN. */
+    private var chainConfig: WireGuardConfig? = null
     private var workers: List<Job> = emptyList()
     private var checkJob: Job? = null
 
@@ -124,17 +128,28 @@ class ProxyVpnService : VpnService() {
                 TunnelStatus(phase = Phase.CONNECTING, profileId = p.id, profileName = displayName(p, s.location.label), sessionId = p.sessionId)
             }
             container.settings.update { it.copy(wasConnected = true) }
-            try {
-                startUpstream(p)
-            } catch (e: Exception) {
-                teardown()
-                return fail(e.message ?: "Invalid connection settings")
+            if (s.chainEnabled) {
+                val chain = container.chain.get() ?: run { teardown(); return fail("VPN chain is on but no WireGuard config is imported") }
+                chainConfig = try {
+                    WireGuardConfig.parse(chain.config)
+                } catch (e: Exception) {
+                    teardown(); return fail("WireGuard config: ${e.message}")
+                }
+
+                TunnelState.update { it.copy(chainName = chain.name) }
             }
-            // From here on all traffic of the routed apps is captured, whatever happens upstream.
-            tun = buildTun(p) ?: run { teardown(); return fail("VPN permission not granted") }
+            val full = p.tunnelMode == TunnelMode.FULL
+            // Full tunnel: capture all traffic of the routed apps before any upstream I/O.
+            if (full) tun = buildTun(p) ?: run { teardown(); return fail("VPN permission not granted") }
             workers = listOf(scope.launch { statsLoop(p.id) }, scope.launch { healthLoop() })
             try {
-                if (p.tunnelMode == TunnelMode.FULL) startHev(p)
+                startChain()
+                startUpstream(p)
+                if (!full) tun = buildTun(p) ?: run { teardown(); return fail("VPN permission not granted") }
+                if (full) startHev(p)
+            } catch (e: IllegalArgumentException) {
+                teardown()
+                return fail(e.message ?: "Invalid connection settings")
             } catch (e: Exception) {
                 Log.w(TAG, "tunnel start failed", e)
                 if (!onProxyFailure(e)) return
@@ -167,6 +182,7 @@ class ProxyVpnService : VpnService() {
         httpProxy?.stop(); httpProxy = null
         socksBridge?.stop(); socksBridge = null
         return try {
+            startChain()
             startUpstream(p)
             if (p.tunnelMode == TunnelMode.FULL) startHev(p)
             if (p.tunnelMode == TunnelMode.PROXY_ONLY) {
@@ -213,6 +229,8 @@ class ProxyVpnService : VpnService() {
         httpProxy?.stop(); httpProxy = null
         socksBridge?.stop(); socksBridge = null
         upstream = null
+        WireGuard.stop()
+        chainConfig = null
         configFile.delete()
         profile = null
         hevBase = 0L to 0L; hevLast = 0L to 0L
@@ -235,11 +253,18 @@ class ProxyVpnService : VpnService() {
 
     // region plumbing
 
-    /** Local servers only — no network I/O, so it can run before the TUN exists. */
+    /** Starts the WireGuard VPN used for chaining, if enabled and not already up. */
+    private fun startChain() {
+        val cfg = chainConfig ?: return
+        if (!WireGuard.running) WireGuard.start(cfg)
+    }
+
+    /** Local servers; with chaining, the proxy is reached via a WireGuard forwarder on 127.0.0.1. */
     private fun startUpstream(p: Profile) {
-        val ep = Presets.build(p)
-        require(ep.host.isNotBlank()) { "Proxy host is empty" }
-        require(ep.username.isNotBlank()) { "Username is empty" }
+        val direct = Presets.build(p)
+        require(direct.host.isNotBlank()) { "Proxy host is empty" }
+        require(direct.username.isNotBlank()) { "Username is empty" }
+        val ep = if (chainConfig != null) direct.copy(host = "127.0.0.1", port = WireGuard.forward(direct.host, direct.port)) else direct
         val up = Upstream(ep)
         upstream = up
         httpProxy = LocalHttpProxy(up).also { it.start() }
@@ -254,7 +279,7 @@ class ProxyVpnService : VpnService() {
         val yaml = if (bridge != null) {
             HevConfig.build("127.0.0.1", bridge.port, null, null)
         } else {
-            val ep = Presets.build(p)
+            val ep = upstream?.endpoint ?: error("Upstream not started")
             // Resolve here (we're outside the VPN) so hev gets a literal address.
             val addr = Resolver.resolve(ep.host).hostAddress ?: ep.host
             HevConfig.build(addr, ep.port, ep.username, ep.password)
@@ -362,7 +387,12 @@ class ProxyVpnService : VpnService() {
             val interval = container.settings.current().healthIntervalSec.coerceIn(10, 600).toLong()
             val down = TunnelState.status.value.phase == Phase.PROXY_DOWN
             delay(if (down) minOf(5L * (fails + 1), interval) * 1000 else interval * 1000)
-            val up = upstream ?: continue
+            val up = upstream
+            if (up == null) {
+                // Upstream never came up (e.g. no network / VPN chain down at connect): keep retrying.
+                if (down) lock.withLock { profile?.let { restartUpstream(it) } }
+                continue
+            }
             val result = runCatching { ProxyProbe.run(up) }
             if (result.isSuccess) {
                 fails = 0

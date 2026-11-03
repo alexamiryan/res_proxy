@@ -129,6 +129,9 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
                 }
             }
 
+            Header("VPN chain (WireGuard)")
+            ChainSection(s, connected = status.isActive)
+
             Header("IP reputation")
             Toggle("Check on connect", "Look up the exit IP every time you connect or change IP", s.recheckOnConnect) { v ->
                 update { it.copy(recheckOnConnect = v) }
@@ -198,8 +201,7 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: () -> Unit) {
                 if (cs.sticky) NumberField("Session lifetime (minutes)", cs.lifetimeMinutes) { v -> updateConn { it.copy(lifetimeMinutes = v) } }
                 Section("Gateway")
                 val preset = Presets.of(s.provider)
-                OutlinedTextField(cs.hostOverride, { v -> updateConn { it.copy(hostOverride = v.trim()) } }, singleLine = true,
-                    label = { Text("Host") }, placeholder = { Text(preset.defaultHost) }, modifier = Modifier.fillMaxWidth())
+                TextSetting("Host", cs.hostOverride, placeholder = preset.defaultHost) { v -> updateConn { it.copy(hostOverride = v.trim()) } }
                 NumberField("Port (0 = default ${preset.defaultPort(cs.protocol, cs.sticky)})", cs.portOverride) { v ->
                     updateConn { it.copy(portOverride = v) }
                 }
@@ -247,9 +249,19 @@ private fun Header(t: String) {
     }
 }
 
+/** Keeps its own text state: settings are persisted asynchronously, so binding straight to them races typing. */
+@Composable
+private fun TextSetting(label: String, value: String, placeholder: String = "", onChange: (String) -> Unit) {
+    var text by remember { mutableStateOf(value) }
+    OutlinedTextField(
+        text, { v -> text = v; onChange(v) }, singleLine = true,
+        label = { Text(label) }, placeholder = { Text(placeholder) }, modifier = Modifier.fillMaxWidth(),
+    )
+}
+
 @Composable
 private fun NumberField(label: String, value: Int, onChange: (Int) -> Unit) {
-    var text by remember(value) { mutableStateOf(value.toString()) }
+    var text by remember { mutableStateOf(value.toString()) }
     OutlinedTextField(
         text, { v -> text = v.filter(Char::isDigit).take(5); text.toIntOrNull()?.let(onChange) },
         label = { Text(label) }, singleLine = true,

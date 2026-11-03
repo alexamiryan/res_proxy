@@ -4,3 +4,5 @@
 # kotlinx.serialization
 -keepattributes *Annotation*, InnerClasses
 -keepclassmembers @kotlinx.serialization.Serializable class ** { *** Companion; *; }
+# JNI entry points exported by libwgbridge.so (Go)
+-keep class dev.resproxy.net.WireGuard { native <methods>; }

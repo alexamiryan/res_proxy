@@ -6,6 +6,7 @@ import android.app.NotificationManager
 import android.content.Context
 import androidx.datastore.preferences.preferencesDataStore
 import dev.resproxy.data.AccountRepository
+import dev.resproxy.data.ChainRepository
 import dev.resproxy.data.Profile
 import dev.resproxy.data.SecretStore
 import dev.resproxy.data.SettingsRepository
@@ -27,6 +28,7 @@ class AppContainer(context: Context) {
     val accounts = AccountRepository(context.dataStore, secrets)
     val settings = SettingsRepository(context.dataStore, secrets)
     val stats = StatsRepository(context.dataStore)
+    val chain = ChainRepository(context.dataStore, secrets)
     val reputation = ReputationRepository(settings)
     val ipRoyalLocations = IpRoyalLocations(File(context.filesDir, "iproyal_locations.json"))
     /** Completes once stored data has been migrated to the current schema. */

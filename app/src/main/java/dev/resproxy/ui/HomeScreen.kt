@@ -254,6 +254,9 @@ private fun ConnectionCard(s: TunnelStatus) {
                 val net = listOfNotNull(g.isp, g.asn, g.connectionType).joinToString(" · ")
                 if (net.isNotEmpty()) Text(net, style = MaterialTheme.typography.bodySmall)
             }
+            s.chainName?.let {
+                Text("Chained via VPN: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+            }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Stat("↓ Down", "${formatBytes(s.downBps)}/s")

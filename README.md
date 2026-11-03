@@ -25,10 +25,11 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native) → SOCKS5 proxy
 - **Auto-rotate**: rotates until the verdict is below your threshold, up to N tries, then keeps the best IP it found.
 - **Kill switch**: a health probe runs every 30 s by default. While the proxy is down, the TUN stays up and traffic is dropped. The tunnel reconnects automatically when the proxy comes back. For full protection, also turn on Always-on VPN and "Block connections without VPN" in system settings.
 - **Split tunnelling, connect on boot, Quick Settings tile, live speed, and data usage per profile.**
+- **VPN chain (WireGuard)**: import a WireGuard `.conf` (e.g. from Proton) and the proxy connection goes apps → TUN → WireGuard → residential proxy. WireGuard runs in-process (`wgbridge/`, wireguard-go + gVisor netstack exposing local TCP forwarders), so no second Android VPN is needed; the proxy hostname is resolved by the VPN's DNS inside the tunnel.
 
 ## Build
 
-You need JDK 21 (set in `gradle.properties`), the Android SDK and NDK 29. The SDK location goes in `local.properties`.
+You need JDK 21 (set in `gradle.properties`), the Android SDK and NDK 29, and Go (version per `wgbridge/go.mod`) for `wgbridge`. Put the SDK and Go locations in `local.properties` (`sdk.dir=…`, `go.dir=…`); without Go the APK builds but WireGuard chaining is unavailable.
 
 ```bash
 ./gradlew testDebugUnitTest assembleDebug     # app/build/outputs/apk/debug/app-debug.apk

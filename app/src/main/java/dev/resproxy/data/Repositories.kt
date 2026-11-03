@@ -113,6 +113,27 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     }
 }
 
+/** The WireGuard config used for VPN chaining. */
+class ChainRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
+
+    val chain: Flow<VpnChain?> = store.data.map { prefs ->
+        prefs[KEY]?.let { runCatching { json.decodeFromString(VpnChain.serializer(), secrets.decrypt(it)) }.getOrNull() }
+    }
+
+    suspend fun get(): VpnChain? = chain.first()
+
+    suspend fun save(chain: VpnChain?) {
+        store.edit { prefs ->
+            if (chain == null) prefs.remove(KEY)
+            else prefs[KEY] = secrets.encrypt(json.encodeToString(VpnChain.serializer(), chain))
+        }
+    }
+
+    private companion object {
+        val KEY = stringPreferencesKey("vpn_chain")
+    }
+}
+
 class StatsRepository(private val store: DataStore<Preferences>) {
 
     private val mapSerializer = MapSerializer(String.serializer(), UsageTotals.serializer())

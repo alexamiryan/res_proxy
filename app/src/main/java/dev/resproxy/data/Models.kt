@@ -132,11 +132,17 @@ data class AppSettings(
     val rotateThreshold: Verdict = Verdict.SUSPICIOUS,
     val maxRotations: Int = 10,
     val healthIntervalSec: Int = 30,
+    /** Route the upstream proxy connection through the imported WireGuard VPN ([VpnChain]). */
+    val chainEnabled: Boolean = false,
 ) {
     companion object {
         const val SCHEMA = 2
     }
 }
+
+/** An imported WireGuard `.conf`; stored encrypted (it contains the private key). */
+@Serializable
+data class VpnChain(val name: String = "", val config: String = "")
 
 /** Cumulative bytes per provider, for providers that bill per GB. */
 @Serializable
