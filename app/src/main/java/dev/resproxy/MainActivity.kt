@@ -9,10 +9,8 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
-import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
-import androidx.compose.runtime.remember
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.lifecycleScope
 import androidx.navigation.compose.NavHost
@@ -44,18 +42,16 @@ class MainActivity : ComponentActivity() {
         setContent {
             ResProxyTheme {
                 val ready by produceState(false) { container.ready.await(); value = true }
-                val accounts by container.accounts.accounts.collectAsState(initial = null)
-                val loaded = accounts?.takeIf { ready } ?: return@ResProxyTheme
-                val start = remember { if (loaded.isNotEmpty()) "home" else "account/${Provider.IPROYAL.name}" }
+                if (!ready) return@ResProxyTheme
                 val nav = rememberNavController()
-                NavHost(nav, startDestination = start) {
+                NavHost(nav, startDestination = "home") {
                     composable("home") {
                         HomeScreen(onSettings = { nav.navigate("settings") }, onAccount = { p -> nav.navigate("account/${p.name}") })
                     }
                     composable("account/{provider}") { entry ->
                         val provider = Provider.valueOf(entry.arguments?.getString("provider") ?: Provider.IPROYAL.name)
-                        AccountScreen(provider, canGoBack = nav.previousBackStackEntry != null) {
-                            if (!nav.popBackStack()) nav.navigate("home") { popUpTo(0) }
+                        AccountScreen(provider, canGoBack = true) {
+                            nav.popBackStack()
                         }
                     }
                     composable("settings") {

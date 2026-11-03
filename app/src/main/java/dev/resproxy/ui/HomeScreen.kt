@@ -80,7 +80,8 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
     val scope = rememberCoroutineScope()
     val status by TunnelState.status.collectAsState()
     val settings by c.settings.settings.collectAsState(initial = null)
-    val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
+    val loadedAccounts by c.accounts.accounts.collectAsState(initial = null)
+    val accounts = loadedAccounts.orEmpty()
     val provider = settings?.provider ?: Provider.IPROYAL
     val account = accounts[provider]
     val locations = c.locations(provider)
@@ -129,6 +130,10 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
             }
             Spacer(Modifier.height(20.dp))
 
+            if (loadedAccounts?.isEmpty() == true) {
+                WelcomeCard(onAccount)
+                return@Column
+            }
             Choice(PROVIDERS, provider, { it.label }) { p ->
                 scope.launch {
                     c.settings.switchProvider(p)
@@ -181,6 +186,25 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
 }
 
 private val PROVIDERS = listOf(Provider.IPROYAL, Provider.GEONODE)
+
+/** First run: set up a provider account, or bring everything over from another profile/phone. */
+@Composable
+private fun WelcomeCard(onAccount: (Provider) -> Unit) {
+    Card(Modifier.fillMaxWidth()) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
+            Text("Get started", style = MaterialTheme.typography.titleMedium)
+            Text("Add your residential proxy account:", style = MaterialTheme.typography.bodyMedium)
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                PROVIDERS.forEach { p ->
+                    FilledTonalButton(onClick = { onAccount(p) }, modifier = Modifier.weight(1f)) { Text("Set up ${p.label}") }
+                }
+            }
+            HorizontalDivider()
+            Text("Or import a backup from another profile or phone:", style = MaterialTheme.typography.bodyMedium)
+            BackupSection(importOnly = true)
+        }
+    }
+}
 
 private enum class Picking { COUNTRY, STATE, CITY }
 

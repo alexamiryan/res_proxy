@@ -44,7 +44,7 @@ private enum class BackupDialog { EXPORT, IMPORT }
 
 /** Settings block: passphrase-encrypted export / import of all settings and credentials. */
 @Composable
-fun BackupSection() {
+fun BackupSection(importOnly: Boolean = false) {
     val ctx = LocalContext.current
     val c = ctx.container
     val scope = rememberCoroutineScope()
@@ -89,13 +89,15 @@ fun BackupSection() {
         }
     }
 
-    Text(
+    if (importOnly) {
+        OutlinedButton(onClick = { dialog = BackupDialog.IMPORT }, modifier = Modifier.fillMaxWidth()) { Text("Import backup") }
+    } else Text(
         "Move this setup to another Android profile or phone: accounts, locations, VPN chain, API keys and " +
             "settings. The backup is encrypted with a passphrase you choose. Profiles can't see each other's files, " +
             "so use Share (e.g. Quick Share, a messenger or Drive) or Copy, then Import on the other side.",
         style = MaterialTheme.typography.bodySmall,
     )
-    Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+    if (!importOnly) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
         OutlinedButton(onClick = { dialog = BackupDialog.EXPORT }, modifier = Modifier.weight(1f)) { Text("Export") }
         OutlinedButton(onClick = { dialog = BackupDialog.IMPORT }, modifier = Modifier.weight(1f)) { Text("Import") }
     }
