@@ -50,12 +50,15 @@ data class Location(
 @Serializable
 data class Gateway(val host: String = "", val port: Int = 0)
 
+const val MAX_LIFETIME_MINUTES = 7 * 1440
+
 /** Technical options, all in Settings → Advanced. */
 @Serializable
 data class ConnectionSettings(
     val protocol: Protocol = Protocol.SOCKS5,
     val sticky: Boolean = true,
-    val lifetimeMinutes: Int = 1440,
+    /** Max allowed: IPRoyal 7 days; Geonode is capped to 24 h by its preset. */
+    val lifetimeMinutes: Int = MAX_LIFETIME_MINUTES,
     /** Per-provider gateway override; empty host / 0 port = preset default. */
     val gateways: Map<Provider, Gateway> = emptyMap(),
     val tunnelMode: TunnelMode = TunnelMode.FULL,
@@ -150,7 +153,7 @@ data class AppSettings(
     val bypassLan: Boolean = true,
 ) {
     companion object {
-        const val SCHEMA = 2
+        const val SCHEMA = 3
     }
 }
 

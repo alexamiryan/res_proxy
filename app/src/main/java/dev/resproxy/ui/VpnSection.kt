@@ -60,6 +60,10 @@ import dev.resproxy.data.VpnExit
 import dev.resproxy.data.VpnProfile
 import dev.resproxy.net.MullvadClient
 import dev.resproxy.net.MullvadRelay
+import dev.resproxy.net.LatencyProbe
+import androidx.compose.material.icons.filled.Speed
+import java.text.DateFormat
+import java.util.Date
 import dev.resproxy.net.WireGuard
 import dev.resproxy.net.WireGuardConfig
 import kotlinx.coroutines.Dispatchers
@@ -185,6 +189,8 @@ fun VpnSettings(s: AppSettings) {
     }
     error?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall, modifier = Modifier.padding(horizontal = 16.dp)) }
 
+    if (profiles.isNotEmpty() || mullvad != null) LatencySection(s, profiles, mullvad != null)
+
     if (pasting) {
         var name by remember { mutableStateOf("") }
         var text by remember { mutableStateOf("") }
@@ -242,6 +248,66 @@ fun VpnSettings(s: AppSettings) {
     }
 }
 
+/** Pings every Mullvad server and imported profile from the phone and lists them fastest first. */
+@Composable
+private fun LatencySection(s: AppSettings, profiles: List<VpnProfile>, hasMullvad: Boolean) {
+    val c = LocalContext.current.container
+    val scope = rememberCoroutineScope()
+    val probe by c.latency.state.collectAsState()
+    val relays by c.mullvad.relays.collectAsState()
+    var showAll by remember { mutableStateOf(false) }
+    val targets = remember(profiles, relays, hasMullvad) { LatencyProbe.targets(profiles, if (hasMullvad) relays else emptyList()) }
+    val selected = if (s.chainEnabled) s.vpnExit else ""
+
+    SettingsGroup("Fastest servers") {
+        SettingRow(
+            if (probe.running) "Testing ${probe.done} of ${probe.total}…" else "Test latency to all servers",
+            if (probe.finishedAt > 0 && !probe.running) {
+                "${probe.results.count { it.value != null }} of ${probe.results.size} answered · tested " +
+                    DateFormat.getTimeInstance(DateFormat.SHORT).format(Date(probe.finishedAt))
+            } else "Pings ${targets.size} servers directly from this phone",
+            Icons.Default.Speed,
+            onClick = if (probe.running) null else ({
+                scope.launch {
+                    val list = if (hasMullvad) runCatching { c.mullvad.refreshRelays() }.getOrDefault(relays) else emptyList()
+                    c.latency.run(LatencyProbe.targets(profiles, list))
+                }
+            }),
+            trailing = { if (probe.running) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) else Icon(Icons.Default.Refresh, null) },
+        )
+        val ranked = targets.mapNotNull { t -> probe.results[t.exit]?.let { t to it } }.sortedBy { it.second }
+        val shown = if (showAll) ranked else ranked.take(10)
+        shown.forEach { (t, ms) ->
+            GroupDivider()
+            SettingRow(
+                (t.countryCode?.let { flagEmoji(it) + "  " } ?: "") + t.label,
+                t.detail,
+                if (t.exit == selected) Icons.Default.Check else null,
+                onClick = { scope.launch { c.settings.update { it.copy(chainEnabled = true, vpnExit = t.exit) } } },
+                trailing = { LatencyText(ms) },
+            )
+        }
+        if (ranked.size > 10) {
+            GroupDivider()
+            SettingRow(if (showAll) "Show top 10" else "Show all ${ranked.size}", onClick = { showAll = !showAll }, trailing = {})
+        }
+        targets.filter { it.exit.startsWith("wg:") && probe.results.containsKey(it.exit) && probe.results[it.exit] == null }.forEach { t ->
+            GroupDivider()
+            SettingRow(t.label, "${t.detail} · doesn't answer ping (may still work)", trailing = { Text("—") })
+        }
+    }
+}
+
+@Composable
+private fun LatencyText(ms: Long) {
+    val color = when {
+        ms < 60 -> StatusColors.connected
+        ms < 150 -> StatusColors.pending
+        else -> StatusColors.down
+    }
+    Text("$ms ms", color = color, fontWeight = FontWeight.SemiBold, style = MaterialTheme.typography.bodyMedium)
+}
+
 /** Human label for the current VPN choice. */
 fun vpnLabel(s: AppSettings, profiles: List<VpnProfile>, relays: List<MullvadRelay>): String {
     if (!s.chainEnabled) return "Off"
@@ -264,6 +330,9 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
     var expanded by remember { mutableStateOf(setOf<String>()) }
     LaunchedEffect(mullvad != null) { if (mullvad != null) runCatching { c.mullvad.refreshRelays() } }
     val selected = if (s.chainEnabled) s.vpnExit else ""
+    val ms = c.latency.state.collectAsState().value.results
+    fun best(rs: List<MullvadRelay>) = rs.mapNotNull { ms[VpnExit.mullvad(it.hostname)] }.minOrNull()
+    fun withMs(text: String, v: Long?) = if (v == null) text else "$text · $v ms"
 
     Dialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
         Scaffold(
@@ -281,14 +350,17 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
                     modifier = Modifier.fillMaxWidth().padding(horizontal = 16.dp),
                 )
                 val q = query.trim().lowercase()
-                val byCountry = relays.groupBy { it.countryCode }.toSortedMap(compareBy { relays.first { r -> r.countryCode == it }.country })
+                // Fastest first once latencies were measured (Settings → VPN), otherwise alphabetical.
+                val byCountry = relays.groupBy { it.countryCode }.entries
+                    .sortedWith(compareBy({ best(it.value) ?: Long.MAX_VALUE }, { it.value.first().country }))
+                    .associate { it.key to it.value }
                 LazyColumn(Modifier.fillMaxSize()) {
                     if (q.isEmpty()) {
                         item { PickRow("Off", "Connect to the proxy directly", selected == "", bold = true) { onPick(false, s.vpnExit) } }
                         if (profiles.isNotEmpty()) item { GroupLabel("My WireGuard profiles") }
                         items(profiles, key = { "wg" + it.id }) { p ->
                             val code = VpnExit.imported(p.id)
-                            PickRow(p.name, null, selected == code) { onPick(true, code) }
+                            PickRow(p.name, ms[code]?.let { "$it ms" }, selected == code) { onPick(true, code) }
                         }
                     }
                     if (mullvad == null) {
@@ -297,7 +369,9 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
                         item { GroupLabel(if (relays.isEmpty()) "Mullvad (loading servers…)" else "Mullvad") }
                         byCountry.forEach { (cc, list) ->
                             val country = list.first().country
-                            val cities = list.groupBy { it.location }
+                            val cities = list.groupBy { it.location }.entries
+                                .sortedWith(compareBy({ best(it.value) ?: Long.MAX_VALUE }, { it.value.first().city }))
+                                .associate { it.key to it.value }
                             val countryHit = q.isEmpty() || country.lowercase().contains(q) || cc == q
                             val cityHits = cities.filter { (_, rs) -> q.isNotEmpty() && rs.first().city.lowercase().contains(q) }
                             val serverHits = if (q.length >= 3) list.filter { it.hostname.contains(q) } else emptyList()
@@ -305,7 +379,7 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
                             val open = cc in expanded || (q.isNotEmpty() && !countryHit)
                             item(key = "mc$cc") {
                                 PickRow(
-                                    "${flagEmoji(cc)}  $country", "${cities.size} cit${if (cities.size == 1) "y" else "ies"} · ${list.size} servers",
+                                    "${flagEmoji(cc)}  $country", withMs("${cities.size} cit${if (cities.size == 1) "y" else "ies"} · ${list.size} servers", best(list)),
                                     selected == VpnExit.mullvad(cc),
                                     trailing = {
                                         IconButton(onClick = { expanded = if (cc in expanded) expanded - cc else expanded + cc }) {
@@ -318,7 +392,7 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
                                 val shown = if (open && (countryHit || q.isEmpty())) cities else cityHits
                                 shown.forEach { (loc, rs) ->
                                     item(key = "ml$loc") {
-                                        PickRow("      ${rs.first().city}", "      ${rs.size} servers", selected == VpnExit.mullvad(loc)) {
+                                        PickRow("      ${rs.first().city}", withMs("      ${rs.size} servers", best(rs)), selected == VpnExit.mullvad(loc)) {
                                             onPick(true, VpnExit.mullvad(loc))
                                         }
                                     }
@@ -326,7 +400,7 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
                             }
                             serverHits.forEach { r ->
                                 item(key = "mh${r.hostname}") {
-                                    PickRow("      ${r.hostname}", "      ${r.city}" + if (r.owned) " · Mullvad-owned" else "", selected == VpnExit.mullvad(r.hostname)) {
+                                    PickRow("      ${r.hostname}", withMs("      ${r.city}" + if (r.owned) " · Mullvad-owned" else "", ms[VpnExit.mullvad(r.hostname)]), selected == VpnExit.mullvad(r.hostname)) {
                                         onPick(true, VpnExit.mullvad(r.hostname))
                                     }
                                 }

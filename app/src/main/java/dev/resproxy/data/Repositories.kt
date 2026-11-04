@@ -113,17 +113,15 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     private fun decode(prefs: Preferences): AppSettings =
         prefs[SETTINGS]?.let { runCatching { json.decodeFromString(AppSettings.serializer(), it) }.getOrNull() } ?: AppSettings()
 
-    /** Schema 0/1 → 2: new defaults for kill switch, auto-connect and auto-rotate. */
-    private fun upgrade(s: AppSettings): AppSettings =
-        if (s.schema >= AppSettings.SCHEMA) s
-        else s.copy(
-            schema = AppSettings.SCHEMA,
-            killSwitch = true,
-            autoConnect = true,
-            autoRotate = true,
-            rotateThreshold = Verdict.SUSPICIOUS,
-            maxRotations = 10,
-        )
+    /** Schema 0/1 → 2: new defaults for kill switch, auto-connect and auto-rotate. 2 → 3: max session lifetime. */
+    private fun upgrade(s: AppSettings): AppSettings {
+        if (s.schema >= AppSettings.SCHEMA) return s
+        var u = s
+        if (u.schema < 2) u = u.copy(killSwitch = true, autoConnect = true, autoRotate = true, rotateThreshold = Verdict.SUSPICIOUS, maxRotations = 10)
+        // The old 24 h default becomes the maximum; a lifetime the user picked themselves is kept.
+        if (u.schema < 3 && u.connection.lifetimeMinutes == 1440) u = u.copy(connection = u.connection.copy(lifetimeMinutes = MAX_LIFETIME_MINUTES))
+        return u.copy(schema = AppSettings.SCHEMA)
+    }
 
     private companion object {
         val SETTINGS = stringPreferencesKey("settings")

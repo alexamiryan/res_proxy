@@ -86,6 +86,12 @@ class VpnFeaturesTest {
         assertEquals(2, cfg.addresses.size)
     }
 
+    @Test fun pingOutputParses() {
+        val out = "PING 1.1.1.1 (1.1.1.1) 56(84) bytes of data.\n64 bytes from 1.1.1.1: icmp_seq=1 ttl=57 time=23.6 ms\n"
+        assertEquals(24L, dev.resproxy.net.LatencyProbe.parse(out))
+        assertNull(dev.resproxy.net.LatencyProbe.parse("1 packets transmitted, 0 received, 100% packet loss"))
+    }
+
     @Test fun vpnExitRoundTrip() {
         assertEquals(VpnExit.Imported("ab12"), VpnExit.parse(VpnExit.imported("ab12")))
         assertEquals(VpnExit.Mullvad("se-got"), VpnExit.parse(VpnExit.mullvad("se-got")))

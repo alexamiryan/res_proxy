@@ -52,7 +52,7 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 | `data/` | `Models.kt` (Account, AppSettings, ConnectionSettings, VpnProfile, MullvadAccount, `VpnExit`), `Repositories.kt` (DataStore repos incl. `VpnRepository`), `SecretStore.kt`, `Backup.kt` |
 | `vpn/ProxyVpnService.kt` | TUN lifecycle, `watchSettings` (live apply), `healthLoop` (stall/handshake/engine detection), `repair`, network-change callback, reputation check + auto-rotate |
 | `vpn/` other | `HevConfig` (YAML), `Routes` (LAN-bypass route complement), `TunnelState` (status + controller), `SystemHooks` (boot receiver, QS tile), `TunnelNative` (JNI) |
-| `net/` | `Upstream` (SOCKS5/HTTP clients, RTT samples), `LoopbackServers` (relay, HTTP proxy, `RelayHealth`), `Resolver` (system DNS + DoH), `WireGuard` (config parser + JNI), `Mullvad` (API, relay list, wg-quick builder), `X25519`, `ProxyProbe` |
+| `net/` | `Upstream` (SOCKS5/HTTP clients, RTT samples), `LoopbackServers` (relay, HTTP proxy, `RelayHealth`), `Resolver` (system DNS + DoH), `WireGuard` (config parser + JNI), `Mullvad` (API, relay list, wg-quick builder), `X25519`, `ProxyProbe`, `LatencyProbe` (parallel ICMP ping to every Mullvad relay / profile endpoint; results sort the Settings → VPN list and the home VPN picker) |
 | `provider/` | Credential presets per provider (`Presets.kt`), location catalogs (`ProviderLocations.kt`) |
 | `reputation/` | Sources, parsers, `ReputationAggregator` verdict rules |
 | `ui/` | Compose screens. Settings = hub (`SettingsScreen`) + pages (`SettingsPageScreen`, `SettingsPage` enum); building blocks `SettingsGroup` / `SettingRow` / `SwitchRow` / `Hint` in `Components.kt`; VPN page and home VPN picker in `VpnSection.kt` |
@@ -94,8 +94,11 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
   backup file).
 - Some networks sinkhole provider and reputation domains (e.g. `iproyal.com`). Every host lookup goes through
   `Resolver` (DoH fallback to 1.1.1.1 / 8.8.8.8 by IP).
-- IPRoyal SOCKS5 has no UDP, so apps fall back to TCP. Geonode session lifetime is capped at 1440 min;
-  IPRoyal's at 7 days.
+- IPRoyal SOCKS5 has no UDP, so apps fall back to TCP. The default session lifetime is the maximum
+  (`MAX_LIFETIME_MINUTES`, 7 days, IPRoyal's limit). The Geonode preset caps it at 1440 min. Schema 3
+  migrated the old 1440 default to 7 days.
+- Android's `/system/bin/ping` (iputils) has no `-4`/`-6` flags; IPv6 uses `ping6`. It works from the app
+  sandbox, and because the app is excluded from its own VPN, it measures the real path even while connected.
 - Users paste whole proxy lines or usernames with targeting params. Presets strip existing params, and the UI
   shows the base username.
 - SOCKS reply codes 1–8 (`SocksRefusedException`) mean the target failed, not the proxy; they don't count as

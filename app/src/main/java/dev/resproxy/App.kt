@@ -42,6 +42,7 @@ class AppContainer(context: Context) {
     val stats = StatsRepository(context.dataStore)
     val vpn = VpnRepository(context.dataStore, secrets)
     val mullvad = MullvadClient(File(context.filesDir, "mullvad_relays.json"))
+    val latency = dev.resproxy.net.LatencyProbe()
     val reputation = ReputationRepository(settings)
     private val locationCatalogs = mapOf(
         Provider.IPROYAL to ProviderLocations(Provider.IPROYAL, File(context.filesDir, "iproyal_locations.json")),
@@ -75,7 +76,7 @@ class AppContainer(context: Context) {
         settings.setKeys(b.apiKeys)
         settings.update {
             val exit = if (legacy != null && b.settings.vpnExit.isEmpty()) VpnExit.imported(legacy.id) else b.settings.vpnExit
-            b.settings.copy(wasConnected = false, sessionId = "", schema = AppSettings.SCHEMA, vpnExit = exit)
+            b.settings.copy(wasConnected = false, sessionId = "", vpnExit = exit)
         }
         accounts.replaceAll(b.accounts)
         b.accounts.forEach { acc -> locationCatalogs[acc.provider]?.let { appScope.launch { it.refresh(acc, force = true) } } }

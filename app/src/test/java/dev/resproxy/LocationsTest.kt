@@ -87,7 +87,7 @@ class LocationsTest {
         val ep = Presets.build(p)
         assertEquals("geo.iproyal.com", ep.host)
         assertEquals(32325, ep.port)
-        assertEquals("secret_country-us_state-iowa_city-desmoines_session-ab12cd34_lifetime-1d", ep.password)
+        assertEquals("secret_country-us_state-iowa_city-desmoines_session-ab12cd34_lifetime-7d", ep.password)
         assertEquals("Des Moines, Iowa, United States", s.location.label)
     }
 }
