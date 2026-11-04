@@ -71,6 +71,18 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 - Add or extend unit tests for pure logic (parsers, presets, routes, crypto, relay behaviour). The suite must
   stay green.
 
+## Git, push and releases
+
+- Remote: `git@github.com:alexamiryan/res_proxy.git`. Always commit and push to `main`, no branches for now.
+- Remote git operations (push, fetch) run in WSL, where the SSH key is unlocked; local git and builds stay on
+  Windows. The Windows `gh` CLI is logged in and handles the GitHub API.
+- **Every push is a release:** run `scripts/release.sh` (Git Bash) instead of a bare push. It needs a clean
+  tree on `main`, runs the tests, builds the debug APK, pushes via WSL and creates release `v0.1.<commit
+  count>` with `ResProxy-v….apk` attached and the commit subjects as notes.
+- `versionCode` is the commit count (`app/build.gradle.kts`), so each release installs over the previous one.
+  The release ships the debug-signed APK (same key as the builds already on the phone; R8 release builds are
+  untested).
+
 ## Device testing
 
 - adb: `D:/android/AndroidSDK/platform-tools/adb.exe`. In Git Bash, prefix `adb shell` commands with

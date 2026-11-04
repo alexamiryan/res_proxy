@@ -16,8 +16,13 @@ android {
         applicationId = "dev.resproxy"
         minSdk = 26
         targetSdk = 36
-        versionCode = 1
-        versionName = "0.1.0"
+        // One build number per commit, so every release installs over the previous one.
+        val build = runCatching {
+            ProcessBuilder("git", "rev-list", "--count", "HEAD").directory(rootDir).start()
+                .inputStream.bufferedReader().readText().trim().toInt()
+        }.getOrDefault(1)
+        versionCode = build
+        versionName = "0.1.$build"
 
         externalNativeBuild {
             ndkBuild {
