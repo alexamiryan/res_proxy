@@ -18,21 +18,15 @@ apk_src=app/build/outputs/apk/debug/app-debug.apk
 apk="app/build/outputs/apk/debug/ResProxy-$tag.apk"
 cp "$apk_src" "$apk"
 
-wsl.exe -e bash -lc 'export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock; cd /mnt/c/Users/Alex/work/res_proxy && git push origin main'
+wsl.exe -e bash -lc 'export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock; cd /mnt/c/Users/Alex/work/res_proxy && git push origin main && git fetch --tags -q origin'
 
 if gh release view "$tag" >/dev/null 2>&1; then
     echo "Release $tag already exists; nothing to publish."
     exit 0
 fi
 
-prev="$(gh release list --limit 1 --json tagName --jq '.[0].tagName' 2>/dev/null || true)"
-if [ -n "$prev" ] && git rev-parse -q --verify "refs/tags/$prev" >/dev/null 2>&1; then
-    range="$prev..HEAD"
-else
-    prev_sha="$(gh api "repos/{owner}/{repo}/git/ref/tags/$prev" --jq .object.sha 2>/dev/null || true)"
-    range="${prev_sha:+$prev_sha..}HEAD"
-fi
-notes="$(git log --no-merges --format='- %s' "$range")"
+prev="$(git describe --tags --abbrev=0 --match 'v*' HEAD 2>/dev/null || true)"
+notes="$(git log --no-merges --format='- %s' "${prev:+$prev..}HEAD")"
 
 gh release create "$tag" "$apk" --target "$sha" --title "ResProxy $version" --notes "$notes"
 wsl.exe -e bash -lc 'export SSH_AUTH_SOCK=$HOME/.ssh/agent.sock; cd /mnt/c/Users/Alex/work/res_proxy && git fetch --tags -q origin'
