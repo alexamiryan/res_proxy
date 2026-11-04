@@ -74,7 +74,7 @@ import dev.resproxy.vpn.TunnelStatus
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
-fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
+fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSettings: () -> Unit) {
     val ctx = LocalContext.current
     val c = ctx.container
     val scope = rememberCoroutineScope()
@@ -86,6 +86,10 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
     val account = accounts[provider]
     val locations = c.locations(provider)
     val catalog by locations.catalog.collectAsState()
+
+    val vpnProfiles by c.vpn.profiles.collectAsState(initial = emptyList())
+    val relays by c.mullvad.relays.collectAsState()
+    var pickingVpn by remember { mutableStateOf(false) }
 
     LaunchedEffect(provider, account) { locations.refresh(account) }
 
@@ -125,7 +129,7 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
             Spacer(Modifier.height(16.dp))
             Text(phaseLabel(status), style = MaterialTheme.typography.titleLarge, fontWeight = FontWeight.SemiBold)
             status.message?.let {
-                Text(it, style = MaterialTheme.typography.bodyMedium, color = MaterialTheme.colorScheme.error,
+                Text(it, style = MaterialTheme.typography.bodyMedium, color = if (status.phase == Phase.CONNECTED) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.error,
                     textAlign = TextAlign.Center, modifier = Modifier.padding(top = 4.dp))
             }
             Spacer(Modifier.height(20.dp))
@@ -159,6 +163,20 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit) {
                 // Geonode targets states in every country; IPRoyal only in the US (built-in list).
                 LocationCard(s.location, catalog, hint, freeTextCities = freeText,
                     freeTextStates = freeText && provider == Provider.GEONODE, onChange = ::setLocation)
+                Spacer(Modifier.height(12.dp))
+                Card(Modifier.fillMaxWidth()) {
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
+                        PickerRow("VPN before proxy", vpnLabel(s, vpnProfiles, relays)) { pickingVpn = true }
+                    }
+                }
+                if (pickingVpn) VpnPickerDialog(
+                    s,
+                    onDismiss = { pickingVpn = false },
+                    onManage = { pickingVpn = false; onVpnSettings() },
+                ) { enabled, exit ->
+                    pickingVpn = false
+                    scope.launch { c.settings.update { it.copy(chainEnabled = enabled, vpnExit = exit) } }
+                }
             }
 
             if (status.isActive) {
@@ -311,14 +329,19 @@ private fun ConnectionCard(s: TunnelStatus) {
                 if (net.isNotEmpty()) Text(net, style = MaterialTheme.typography.bodySmall)
             }
             s.chainName?.let {
-                Text("Chained via VPN: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
+                Text("Through VPN: $it", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
             }
             HorizontalDivider(Modifier.padding(vertical = 12.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                 Stat("↓ Down", "${formatBytes(s.downBps)}/s")
                 Stat("↑ Up", "${formatBytes(s.upBps)}/s")
                 Stat("Session", formatBytes(s.sessionDown + s.sessionUp))
-                Stat("Latency", s.latencyMs?.let { "$it ms" } ?: "—")
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
+                if (s.chainName != null) Stat("Ping to VPN", s.vpnPingMs?.let { "$it ms" } ?: "—")
+                Stat(if (s.chainName != null) "Ping to proxy (via VPN)" else "Ping to proxy", s.proxyPingMs?.let { "$it ms" } ?: "—")
+                if (s.repairs > 0) Stat("Auto-repairs", s.repairs.toString())
             }
         }
     }

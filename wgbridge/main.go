@@ -26,6 +26,9 @@ import (
 	"time"
 	"unsafe"
 
+	"golang.org/x/net/icmp"
+	"golang.org/x/net/ipv4"
+	"golang.org/x/net/ipv6"
 	"golang.zx2c4.com/wireguard/conn"
 	"golang.zx2c4.com/wireguard/device"
 	"golang.zx2c4.com/wireguard/tun/netstack"
@@ -196,6 +199,61 @@ func status() string {
 		}
 	}
 	return fmt.Sprintf("%d,%d,%d", hs, rx, tx)
+}
+
+// ping sends one ICMP echo through the tunnel and returns the round trip in ms.
+func ping(n *netstack.Net, target string) (int, error) {
+	addr, err := netip.ParseAddr(target)
+	if err != nil {
+		return 0, err
+	}
+	c, err := n.DialPingAddr(netip.Addr{}, addr)
+	if err != nil {
+		return 0, err
+	}
+	defer c.Close()
+	var typ icmp.Type = ipv4.ICMPTypeEcho
+	proto := 1
+	if addr.Is6() {
+		typ, proto = ipv6.ICMPTypeEchoRequest, 58
+	}
+	msg := icmp.Message{Type: typ, Body: &icmp.Echo{ID: 0x5250, Seq: int(time.Now().UnixNano() & 0x7fff), Data: []byte("resproxy")}}
+	b, err := msg.Marshal(nil)
+	if err != nil {
+		return 0, err
+	}
+	c.SetDeadline(time.Now().Add(3 * time.Second))
+	start := time.Now()
+	if _, err := c.Write(b); err != nil {
+		return 0, err
+	}
+	buf := make([]byte, 1500)
+	for {
+		k, err := c.Read(buf)
+		if err != nil {
+			return 0, err
+		}
+		m, err := icmp.ParseMessage(proto, buf[:k])
+		if err == nil && (m.Type == ipv4.ICMPTypeEchoReply || m.Type == ipv6.ICMPTypeEchoReply) {
+			return int(time.Since(start).Milliseconds()), nil
+		}
+	}
+}
+
+//export Java_dev_resproxy_net_WireGuard_nativePing
+func Java_dev_resproxy_net_WireGuard_nativePing(env *C.JNIEnv, cls C.jclass, target C.jstring) C.jint {
+	t := goStr(env, target)
+	mu.Lock()
+	n := tnet
+	mu.Unlock()
+	if n == nil {
+		return -1
+	}
+	ms, err := ping(n, t)
+	if err != nil {
+		return -1
+	}
+	return C.jint(ms)
 }
 
 //export Java_dev_resproxy_net_WireGuard_nativeStart

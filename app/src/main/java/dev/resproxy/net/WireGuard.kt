@@ -143,6 +143,13 @@ object WireGuard {
         return System.currentTimeMillis() / 1000 - hs
     }
 
+    /** In-tunnel ICMP round trip to [ip] (e.g. the VPN's DNS server, which sits on the VPN server) in ms. */
+    fun ping(ip: String): Long? {
+        if (!running) return null
+        return nativePing(ip).takeIf { it >= 0 }?.toLong()
+    }
+
+    @JvmStatic private external fun nativePing(target: String): Int
     @JvmStatic private external fun nativeStart(uapi: String, addresses: String, dns: String, mtu: Int): String
     @JvmStatic private external fun nativeForward(target: String): Int
     @JvmStatic private external fun nativeStop()

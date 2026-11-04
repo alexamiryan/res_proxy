@@ -150,3 +150,64 @@ private fun PlaceRow(text: String, bold: Boolean = false, onClick: () -> Unit) {
         HorizontalDivider()
     }
 }
+
+/** A titled rounded card holding setting rows; the building block of every settings page. */
+@Composable
+fun SettingsGroup(title: String? = null, content: @Composable androidx.compose.foundation.layout.ColumnScope.() -> Unit) {
+    Column(Modifier.fillMaxWidth()) {
+        title?.let {
+            Text(
+                it, style = MaterialTheme.typography.labelLarge, color = MaterialTheme.colorScheme.primary,
+                modifier = Modifier.padding(start = 16.dp, bottom = 6.dp, top = 4.dp),
+            )
+        }
+        androidx.compose.material3.Surface(
+            shape = androidx.compose.foundation.shape.RoundedCornerShape(20.dp),
+            color = MaterialTheme.colorScheme.surfaceContainer,
+            modifier = Modifier.fillMaxWidth(),
+        ) {
+            Column(Modifier.padding(vertical = 4.dp), content = content)
+        }
+    }
+}
+
+/** A list row: optional icon, title, subtitle, and a trailing slot (chevron, switch, button…). */
+@Composable
+fun SettingRow(
+    title: String,
+    subtitle: String? = null,
+    icon: androidx.compose.ui.graphics.vector.ImageVector? = null,
+    onClick: (() -> Unit)? = null,
+    trailing: (@Composable () -> Unit)? = if (onClick != null) ({ Icon(Icons.Default.ChevronRight, null) }) else null,
+) {
+    Row(
+        Modifier.fillMaxWidth()
+            .then(if (onClick != null) Modifier.clickable(onClick = onClick) else Modifier)
+            .padding(horizontal = 16.dp, vertical = 12.dp),
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        icon?.let {
+            Icon(it, null, tint = MaterialTheme.colorScheme.primary)
+            Spacer(Modifier.width(16.dp))
+        }
+        Column(Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            subtitle?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        }
+        trailing?.let { Spacer(Modifier.width(12.dp)); it() }
+    }
+}
+
+@Composable
+fun SwitchRow(title: String, subtitle: String? = null, value: Boolean, enabled: Boolean = true, onChange: (Boolean) -> Unit) {
+    SettingRow(title, subtitle, onClick = if (enabled) ({ onChange(!value) }) else null, trailing = { Switch(value, onChange, enabled = enabled) })
+}
+
+/** Small explanatory text inside or under a group. */
+@Composable
+fun Hint(text: String, modifier: Modifier = Modifier.padding(horizontal = 16.dp, vertical = 6.dp)) {
+    Text(text, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = modifier)
+}
+
+@Composable
+fun GroupDivider() = HorizontalDivider(Modifier.padding(horizontal = 16.dp), color = MaterialTheme.colorScheme.outlineVariant.copy(alpha = 0.5f))

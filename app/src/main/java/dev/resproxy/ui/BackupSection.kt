@@ -40,7 +40,7 @@ import kotlinx.coroutines.withContext
 import java.text.DateFormat
 import java.util.Date
 
-private enum class BackupDialog { EXPORT, IMPORT }
+private enum class BackupDialog { EXPORT, IMPORT, PASSPHRASE }
 
 /** Settings block: passphrase-encrypted export / import of all settings and credentials. */
 @Composable
@@ -55,17 +55,27 @@ fun BackupSection(importOnly: Boolean = false) {
     var message by remember { mutableStateOf<String?>(null) }
     var pending by remember { mutableStateOf<BackupPayload?>(null) }
     var sealed by remember { mutableStateOf<String?>(null) }
+    /** Backup text picked for import, waiting for its passphrase. */
+    var loaded by remember { mutableStateOf<String?>(null) }
 
-    fun reset() { dialog = null; pass = ""; pass2 = ""; busy = false; sealed = null }
+    fun reset() { dialog = null; pass = ""; pass2 = ""; busy = false; sealed = null; loaded = null }
+
+    fun gotText(text: String?) {
+        when {
+            text.isNullOrBlank() -> { message = "Nothing to import"; reset() }
+            !BackupCrypto.looksLikeBackup(text) -> { message = "That isn't a ResProxy backup"; reset() }
+            else -> { loaded = text; pass = ""; dialog = BackupDialog.PASSPHRASE }
+        }
+    }
 
     /** Encrypts once per dialog; PBKDF2 is deliberately slow. */
     suspend fun sealedText(): String = sealed ?: withContext(Dispatchers.Default) {
         BackupCrypto.seal(c.exportBackup(), pass.toCharArray())
     }.also { sealed = it }
 
-    fun decrypt(text: String?) {
-        if (text.isNullOrBlank()) { message = "Nothing to import"; return }
-        busy = true
+    fun decrypt() {
+        val text = loaded ?: return
+        busy = true; message = null
         scope.launch {
             val result = withContext(Dispatchers.Default) { runCatching { BackupCrypto.open(text, pass.toCharArray()) } }
             busy = false
@@ -85,23 +95,23 @@ fun BackupSection(importOnly: Boolean = false) {
         if (uri == null) return@rememberLauncherForActivityResult
         scope.launch {
             val text = withContext(Dispatchers.IO) { ctx.contentResolver.openInputStream(uri)?.use { it.readBytes().decodeToString() } }
-            decrypt(text)
+            gotText(text)
         }
     }
 
     if (importOnly) {
-        OutlinedButton(onClick = { dialog = BackupDialog.IMPORT }, modifier = Modifier.fillMaxWidth()) { Text("Import backup") }
+        OutlinedButton(onClick = { dialog = BackupDialog.IMPORT }, modifier = Modifier.fillMaxWidth()) { Text("Import backup", maxLines = 1) }
     } else Text(
-        "Move this setup to another Android profile or phone: accounts, locations, VPN chain, API keys and " +
-            "settings. The backup is encrypted with a passphrase you choose. Profiles can't see each other's files, " +
-            "so use Share (e.g. Quick Share, a messenger or Drive) or Copy, then Import on the other side.",
+        "Copy this setup to another Android profile or phone: accounts, VPN profiles, Mullvad account, API keys and " +
+            "settings, encrypted with a passphrase you choose. Android keeps profiles apart, so move the file with Share " +
+            "(a messenger, Drive, email to yourself), then Import on the other side. Each profile keeps its own Mullvad device.",
         style = MaterialTheme.typography.bodySmall,
     )
     if (!importOnly) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-        OutlinedButton(onClick = { dialog = BackupDialog.EXPORT }, modifier = Modifier.weight(1f)) { Text("Export") }
-        OutlinedButton(onClick = { dialog = BackupDialog.IMPORT }, modifier = Modifier.weight(1f)) { Text("Import") }
+        OutlinedButton(onClick = { dialog = BackupDialog.EXPORT }, modifier = Modifier.weight(1f)) { Text("Export", maxLines = 1) }
+        OutlinedButton(onClick = { dialog = BackupDialog.IMPORT }, modifier = Modifier.weight(1f)) { Text("Import", maxLines = 1) }
     }
-    message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
+    if (dialog == null) message?.let { Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary) }
 
     when (dialog) {
         BackupDialog.EXPORT -> {
@@ -141,20 +151,29 @@ fun BackupSection(importOnly: Boolean = false) {
         BackupDialog.IMPORT -> AlertDialog(
             onDismissRequest = ::reset,
             title = { Text("Import backup") },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    PassField("Passphrase", pass) { pass = it }
-                    if (busy) CircularProgressIndicator()
-                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
-                        TextButton(enabled = pass.isNotEmpty() && !busy, onClick = { openFile.launch(arrayOf("*/*")) }) { Text("Open file") }
-                        TextButton(enabled = pass.isNotEmpty() && !busy, onClick = {
-                            val clip = ctx.getSystemService(ClipboardManager::class.java).primaryClip
-                            decrypt(clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString())
-                        }) { Text("Paste") }
-                    }
+            text = { Text("Choose the backup file, or paste backup text you copied.") },
+            confirmButton = {
+                Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    TextButton(onClick = {
+                        val clip = ctx.getSystemService(ClipboardManager::class.java).primaryClip
+                        gotText(clip?.takeIf { it.itemCount > 0 }?.getItemAt(0)?.coerceToText(ctx)?.toString())
+                    }) { Text("Paste") }
+                    TextButton(onClick = { openFile.launch(arrayOf("*/*")) }) { Text("Choose file") }
                 }
             },
-            confirmButton = {},
+            dismissButton = { TextButton(onClick = ::reset) { Text("Cancel") } },
+        )
+        BackupDialog.PASSPHRASE -> AlertDialog(
+            onDismissRequest = ::reset,
+            title = { Text("Backup passphrase") },
+            text = {
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    PassField("Passphrase", pass) { pass = it; message = null }
+                    message?.let { Text(it, color = MaterialTheme.colorScheme.error, style = MaterialTheme.typography.bodySmall) }
+                    if (busy) CircularProgressIndicator()
+                }
+            },
+            confirmButton = { TextButton(enabled = pass.isNotEmpty() && !busy, onClick = ::decrypt) { Text("Unlock") } },
             dismissButton = { TextButton(onClick = ::reset) { Text("Cancel") } },
         )
         null -> Unit
@@ -169,7 +188,8 @@ fun BackupSection(importOnly: Boolean = false) {
                     "Backup from ${DateFormat.getDateTimeInstance().format(Date(b.createdAt))}:\n" +
                         "• Accounts: ${b.accounts.joinToString { it.provider.label }.ifEmpty { "none" }}\n" +
                         "• Location: ${b.settings.provider.label}, ${b.settings.location.label}\n" +
-                        "• VPN chain: ${b.chain?.name ?: "none"}\n\n" +
+                        "• VPN profiles: ${b.vpnProfiles.joinToString { it.name }.ifEmpty { b.chain?.name ?: "none" }}\n" +
+                        "• Mullvad: ${if (b.mullvadNumber.isNotEmpty()) "yes" else "no"}\n\n" +
                         "This replaces all accounts and settings here and disconnects."
                 )
             },

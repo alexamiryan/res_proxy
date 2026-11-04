@@ -75,6 +75,24 @@ class LocalServersTest {
         }
     }
 
+    @Test fun relayHealthCountsWorkingAndFailingConnections() {
+        val health = dev.resproxy.net.RelayHealth()
+        val good = LocalSocksServer(upstream(), health).start()
+        val bad = LocalSocksServer(upstream(pass = "nope"), health).start()
+        try {
+            Socks5Client.connect(Endpoint("127.0.0.1", good.port, Protocol.SOCKS5, "", ""), "example.com", 443, 3000).use { s ->
+                s.getOutputStream().write("hi\n".toByteArray())
+                assertEquals("echo:hi", BufferedReader(InputStreamReader(s.getInputStream())).readLine())
+            }
+            runCatching { Socks5Client.connect(Endpoint("127.0.0.1", bad.port, Protocol.SOCKS5, "", ""), "example.com", 443, 3000) }
+            Thread.sleep(200)
+            assertEquals(1L, health.ok.get())
+            assertEquals(1L, health.failed.get())
+        } finally {
+            good.stop(); bad.stop()
+        }
+    }
+
     @Test(expected = ProxyAuthException::class)
     fun wrongPasswordSurfacesAsAuthError() {
         upstream(pass = "nope").open("example.com", 443)

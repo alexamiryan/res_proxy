@@ -18,8 +18,12 @@ data class BackupPayload(
     val createdAt: Long = 0,
     val settings: AppSettings = AppSettings(),
     val accounts: List<Account> = emptyList(),
+    /** Only in backups made before VPN profiles existed. */
     val chain: VpnChain? = null,
     val apiKeys: ApiKeys = ApiKeys(),
+    val vpnProfiles: List<VpnProfile> = emptyList(),
+    /** The Mullvad device key stays per install; the other side registers its own. */
+    val mullvadNumber: String = "",
 )
 
 class WrongPassphraseException : IOException("Wrong passphrase or damaged backup")

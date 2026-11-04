@@ -131,24 +131,60 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
     }
 }
 
-/** The WireGuard config used for VPN chaining. */
-class ChainRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
+/** Imported WireGuard profiles and the Mullvad account, both Keystore-encrypted. */
+class VpnRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
 
-    val chain: Flow<VpnChain?> = store.data.map { prefs ->
-        prefs[KEY]?.let { runCatching { json.decodeFromString(VpnChain.serializer(), secrets.decrypt(it)) }.getOrNull() }
+    private val listSerializer = ListSerializer(VpnProfile.serializer())
+
+    val profiles: Flow<List<VpnProfile>> = store.data.map { prefs ->
+        prefs[PROFILES]?.let { runCatching { json.decodeFromString(listSerializer, secrets.decrypt(it)) }.getOrNull() } ?: emptyList()
     }
 
-    suspend fun get(): VpnChain? = chain.first()
+    val mullvad: Flow<MullvadAccount?> = store.data.map { prefs ->
+        prefs[MULLVAD]?.let { runCatching { json.decodeFromString(MullvadAccount.serializer(), secrets.decrypt(it)) }.getOrNull() }
+    }
 
-    suspend fun save(chain: VpnChain?) {
+    suspend fun profiles(): List<VpnProfile> = profiles.first()
+    suspend fun mullvad(): MullvadAccount? = mullvad.first()
+
+    suspend fun saveProfiles(list: List<VpnProfile>) {
+        store.edit { it[PROFILES] = secrets.encrypt(json.encodeToString(listSerializer, list)) }
+    }
+
+    suspend fun upsert(p: VpnProfile) {
+        val cur = profiles()
+        saveProfiles(if (cur.any { it.id == p.id }) cur.map { if (it.id == p.id) p else it } else cur + p)
+    }
+
+    suspend fun remove(id: String) = saveProfiles(profiles().filterNot { it.id == id })
+
+    suspend fun saveMullvad(a: MullvadAccount?) {
         store.edit { prefs ->
-            if (chain == null) prefs.remove(KEY)
-            else prefs[KEY] = secrets.encrypt(json.encodeToString(VpnChain.serializer(), chain))
+            if (a == null) prefs.remove(MULLVAD) else prefs[MULLVAD] = secrets.encrypt(json.encodeToString(MullvadAccount.serializer(), a))
         }
     }
 
+    /** Moves the pre-profiles single chain config into the profile list; returns its new id. */
+    suspend fun migrateLegacyChain(): String? {
+        var id: String? = null
+        store.edit { prefs ->
+            val raw = prefs[LEGACY_CHAIN] ?: return@edit
+            val chain = runCatching { json.decodeFromString(VpnChain.serializer(), secrets.decrypt(raw)) }.getOrNull()
+            if (chain != null && chain.config.isNotBlank()) {
+                val cur = prefs[PROFILES]?.let { runCatching { json.decodeFromString(listSerializer, secrets.decrypt(it)) }.getOrNull() }.orEmpty()
+                val p = VpnProfile(name = chain.name, config = chain.config)
+                prefs[PROFILES] = secrets.encrypt(json.encodeToString(listSerializer, cur + p))
+                id = p.id
+            }
+            prefs.remove(LEGACY_CHAIN)
+        }
+        return id
+    }
+
     private companion object {
-        val KEY = stringPreferencesKey("vpn_chain")
+        val PROFILES = stringPreferencesKey("vpn_profiles")
+        val MULLVAD = stringPreferencesKey("mullvad")
+        val LEGACY_CHAIN = stringPreferencesKey("vpn_chain")
     }
 }
 

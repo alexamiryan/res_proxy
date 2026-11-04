@@ -20,6 +20,8 @@ import dev.resproxy.data.Provider
 import dev.resproxy.ui.AccountScreen
 import dev.resproxy.ui.HomeScreen
 import dev.resproxy.ui.ResProxyTheme
+import dev.resproxy.ui.SettingsPage
+import dev.resproxy.ui.SettingsPageScreen
 import dev.resproxy.ui.SettingsScreen
 import dev.resproxy.vpn.TunnelController
 import dev.resproxy.vpn.TunnelState
@@ -46,7 +48,11 @@ class MainActivity : ComponentActivity() {
                 val nav = rememberNavController()
                 NavHost(nav, startDestination = "home") {
                     composable("home") {
-                        HomeScreen(onSettings = { nav.navigate("settings") }, onAccount = { p -> nav.navigate("account/${p.name}") })
+                        HomeScreen(
+                            onSettings = { nav.navigate("settings") },
+                            onAccount = { p -> nav.navigate("account/${p.name}") },
+                            onVpnSettings = { nav.navigate("settings/${SettingsPage.VPN.name}") },
+                        )
                     }
                     composable("account/{provider}") { entry ->
                         val provider = Provider.valueOf(entry.arguments?.getString("provider") ?: Provider.IPROYAL.name)
@@ -55,7 +61,15 @@ class MainActivity : ComponentActivity() {
                         }
                     }
                     composable("settings") {
-                        SettingsScreen(onBack = { nav.popBackStack() }, onAccount = { p -> nav.navigate("account/${p.name}") })
+                        SettingsScreen(
+                            onBack = { nav.popBackStack() },
+                            onAccount = { p -> nav.navigate("account/${p.name}") },
+                            onPage = { page -> nav.navigate("settings/${page.name}") },
+                        )
+                    }
+                    composable("settings/{page}") { entry ->
+                        val page = SettingsPage.valueOf(entry.arguments?.getString("page") ?: SettingsPage.VPN.name)
+                        SettingsPageScreen(page, onBack = { nav.popBackStack() })
                     }
                 }
             }

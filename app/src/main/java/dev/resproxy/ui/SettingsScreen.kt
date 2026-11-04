@@ -3,29 +3,33 @@ package dev.resproxy.ui
 import android.content.Intent
 import android.provider.Settings
 import androidx.activity.compose.BackHandler
-import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
-import androidx.compose.material.icons.filled.ExpandLess
-import androidx.compose.material.icons.filled.ExpandMore
+import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.DataUsage
+import androidx.compose.material.icons.filled.Shield
+import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.filled.Tune
+import androidx.compose.material.icons.filled.VerifiedUser
+import androidx.compose.material.icons.filled.VpnLock
 import androidx.compose.material3.Button
-import androidx.compose.material3.Card
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
-import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Text
@@ -39,9 +43,7 @@ import androidx.compose.runtime.key
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
-import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
-import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontFamily
@@ -60,224 +62,294 @@ import dev.resproxy.data.SplitMode
 import dev.resproxy.data.TunnelMode
 import dev.resproxy.data.Verdict
 import dev.resproxy.provider.Presets
-import dev.resproxy.vpn.TunnelState
 import kotlinx.coroutines.launch
 
-@OptIn(ExperimentalMaterial3Api::class)
+enum class SettingsPage(val title: String) {
+    VPN("VPN"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced")
+}
+
+/** Settings home: accounts plus one row per page. */
 @Composable
-fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit) {
-    val ctx = LocalContext.current
-    val scope = rememberCoroutineScope()
-    val c = ctx.container
+fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit, onPage: (SettingsPage) -> Unit) {
+    val c = LocalContext.current.container
     val settings by c.settings.settings.collectAsState(initial = null)
     val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
-    val usage by c.stats.totals.collectAsState(initial = emptyMap())
-    val status by TunnelState.status.collectAsState()
-    var keys by remember { mutableStateOf<ApiKeys?>(null) }
-    var keysSaved by remember { mutableStateOf(false) }
-    var advanced by rememberSaveable { mutableStateOf(false) }
-    var pickingApps by remember { mutableStateOf(false) }
-    var gatewayPicks by remember { mutableStateOf(0) }
-    LaunchedEffect(Unit) { keys = c.settings.currentKeys() }
+    val profiles by c.vpn.profiles.collectAsState(initial = emptyList())
+    val mullvad by c.vpn.mullvad.collectAsState(initial = null)
+    val s = settings ?: return
 
+    Page("Settings", onBack) {
+        SettingsGroup("Proxy accounts") {
+            for (p in listOf(Provider.IPROYAL, Provider.GEONODE)) {
+                val a = accounts[p]
+                SettingRow(
+                    p.label + if (p == s.provider) " · in use" else "",
+                    // Pasted Geonode usernames carry targeting parameters (stripped at connect); show the base name.
+                    if (a == null) "Not set up" else if (p == Provider.GEONODE) a.username.substringBefore('-') else a.username,
+                    Icons.Default.AccountCircle,
+                    onClick = { onAccount(p) },
+                )
+            }
+        }
+        SettingsGroup {
+            val vpnSummary = listOfNotNull(
+                mullvad?.let { "Mullvad" },
+                profiles.size.takeIf { it > 0 }?.let { "$it profile" + if (it > 1) "s" else "" },
+            ).joinToString(" · ").ifEmpty { "Not set up" }
+            SettingRow("VPN", vpnSummary, Icons.Default.VpnLock, onClick = { onPage(SettingsPage.VPN) })
+            GroupDivider()
+            SettingRow(
+                "Protection",
+                listOfNotNull(if (s.killSwitch) "Kill switch on" else "Kill switch off", "LAN bypassed".takeIf { s.bypassLan }).joinToString(" · "),
+                Icons.Default.Shield, onClick = { onPage(SettingsPage.PROTECTION) },
+            )
+            GroupDivider()
+            SettingRow(
+                "IP reputation", if (s.autoRotate) "Auto-rotate until ${if (s.rotateThreshold == Verdict.SUSPICIOUS) "clean" else "not bad"}" else "Check only",
+                Icons.Default.VerifiedUser, onClick = { onPage(SettingsPage.REPUTATION) },
+            )
+            GroupDivider()
+            SettingRow(
+                "Backup & transfer", "Copy this setup to other profiles or phones",
+                Icons.Default.Backup, onClick = { onPage(SettingsPage.BACKUP) },
+            )
+            GroupDivider()
+            SettingRow("Data usage", "Traffic per provider", Icons.Default.DataUsage, onClick = { onPage(SettingsPage.USAGE) })
+            GroupDivider()
+            SettingRow("Advanced", "Protocol, session, gateway, split tunnelling", Icons.Default.Tune, onClick = { onPage(SettingsPage.ADVANCED) })
+        }
+    }
+}
+
+@Composable
+fun SettingsPageScreen(page: SettingsPage, onBack: () -> Unit) {
+    val ctx = LocalContext.current
+    val c = ctx.container
+    val scope = rememberCoroutineScope()
+    val settings by c.settings.settings.collectAsState(initial = null)
+    var pickingApps by remember { mutableStateOf(false) }
+    val s = settings ?: return
     fun update(f: (AppSettings) -> AppSettings) = scope.launch { c.settings.update(f) }
     fun updateConn(f: (ConnectionSettings) -> ConnectionSettings) = update { it.copy(connection = f(it.connection)) }
 
-    val s = settings ?: return
     if (pickingApps) {
         BackHandler { pickingApps = false }
         AppPickerScreen(selected = s.connection.apps, onDone = { apps -> updateConn { it.copy(apps = apps) }; pickingApps = false })
         return
     }
 
+    Page(page.title, onBack) {
+        when (page) {
+            SettingsPage.VPN -> VpnSettings(s)
+            SettingsPage.PROTECTION -> {
+                SettingsGroup {
+                    SwitchRow("Kill switch", "Block traffic while connecting, repairing or when the proxy is down", s.killSwitch) { v ->
+                        update { it.copy(killSwitch = v) }
+                    }
+                    GroupDivider()
+                    SwitchRow("Reconnect automatically", "Restore the last connection when the app or phone restarts", s.autoConnect) { v ->
+                        update { it.copy(autoConnect = v) }
+                    }
+                    GroupDivider()
+                    SwitchRow("Bypass for local network", "Printers, casting, router pages and other LAN devices connect directly", s.bypassLan) { v ->
+                        update { it.copy(bypassLan = v) }
+                    }
+                }
+                SettingsGroup("Always-on VPN") {
+                    Hint("For protection even before the app starts, turn on Always-on VPN and \"Block connections without VPN\" for ResProxy.")
+                    SettingRow("Open system VPN settings", onClick = { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) })
+                }
+                SettingsGroup("Connection health") {
+                    Hint(
+                        "ResProxy watches whether apps' connections actually get answers, the VPN handshake and the proxy. " +
+                            "When something breaks while it still looks connected, it rebuilds the connection on its own; " +
+                            "the kill switch keeps traffic blocked meanwhile.",
+                    )
+                    Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+                        NumberField("Proxy probe interval (seconds)", s.healthIntervalSec) { v -> update { it.copy(healthIntervalSec = v) } }
+                    }
+                }
+            }
+            SettingsPage.REPUTATION -> ReputationSettings(s, ::update)
+            SettingsPage.BACKUP -> {
+                SettingsGroup { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { BackupSection() } }
+            }
+            SettingsPage.USAGE -> UsageSettings()
+            SettingsPage.ADVANCED -> AdvancedSettings(s, ::updateConn) { pickingApps = true }
+        }
+    }
+}
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+private fun Page(title: String, onBack: () -> Unit, content: @Composable ColumnScope.() -> Unit) {
     Scaffold(
         topBar = {
             TopAppBar(
-                title = { Text("Settings") },
+                title = { Text(title) },
                 navigationIcon = { IconButton(onClick = onBack) { Icon(Icons.AutoMirrored.Filled.ArrowBack, "Back") } },
             )
         },
     ) { pad ->
         Column(
-            Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(16.dp),
-            verticalArrangement = Arrangement.spacedBy(12.dp),
+            Modifier.fillMaxSize().padding(pad).verticalScroll(rememberScrollState()).padding(horizontal = 16.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(20.dp),
         ) {
-            Header("Accounts")
-            for (p in listOf(Provider.IPROYAL, Provider.GEONODE)) {
-                val a = accounts[p]
-                Row(Modifier.fillMaxWidth().clickable { onAccount(p) }, verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(p.label + if (p == s.provider) " (selected)" else "")
-                        Text(
-                            when {
-                                a == null -> "Not set up"
-                                p == Provider.IPROYAL -> a.username + if (a.apiToken.isNotBlank()) " · API token set" else " · no API token"
-                                else -> a.username
-                            },
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    TextButton(onClick = { onAccount(p) }) { Text(if (a == null) "Set up" else "Edit") }
-                }
-            }
+            content()
+            Spacer(Modifier.height(24.dp))
+        }
+    }
+}
 
-            Header("Protection")
-            Toggle("Kill switch", "Block all traffic while connecting, rotating or when the proxy is down", s.killSwitch) { v ->
-                update { it.copy(killSwitch = v) }
-            }
-            Toggle("Reconnect automatically", "Restore the last connection when the app or phone restarts", s.autoConnect) { v ->
-                update { it.copy(autoConnect = v) }
-            }
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(12.dp)) {
-                    Text(
-                        "For protection even while the app is starting, enable Always-on VPN and " +
-                            "\"Block connections without VPN\" for ResProxy in system settings.",
-                        style = MaterialTheme.typography.bodySmall,
-                    )
-                    TextButton(onClick = { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) }) { Text("Open system VPN settings") }
-                }
-            }
+@Composable
+private fun ReputationSettings(s: AppSettings, update: ((AppSettings) -> AppSettings) -> Unit) {
+    val c = LocalContext.current.container
+    val scope = rememberCoroutineScope()
+    var keys by remember { mutableStateOf<ApiKeys?>(null) }
+    var saved by remember { mutableStateOf(false) }
+    LaunchedEffect(Unit) { keys = c.settings.currentKeys() }
 
-            Header("VPN chain (WireGuard)")
-            ChainSection(s, connected = status.isActive)
-
-            Header("IP reputation")
-            Toggle("Check on connect", "Look up the exit IP every time you connect or change IP", s.recheckOnConnect) { v ->
-                update { it.copy(recheckOnConnect = v) }
-            }
-            Toggle("Auto-rotate bad IPs", "Keep switching to a new IP until the reputation is acceptable", s.autoRotate) { v ->
-                update { it.copy(autoRotate = v) }
-            }
-            if (s.autoRotate) {
+    SettingsGroup {
+        SwitchRow("Check on connect", "Look up the exit IP every time you connect or change IP", s.recheckOnConnect) { v ->
+            update { it.copy(recheckOnConnect = v) }
+        }
+        GroupDivider()
+        SwitchRow("Auto-rotate bad IPs", "Switch to a new IP until the reputation is acceptable", s.autoRotate) { v ->
+            update { it.copy(autoRotate = v) }
+        }
+        if (s.autoRotate) {
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 Text("Accept an IP only if it is", style = MaterialTheme.typography.bodyMedium)
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    FilterChip(s.rotateThreshold == Verdict.SUSPICIOUS, { update { it.copy(rotateThreshold = Verdict.SUSPICIOUS) } },
-                        label = { Text("Clean") })
-                    FilterChip(s.rotateThreshold == Verdict.BAD, { update { it.copy(rotateThreshold = Verdict.BAD) } },
-                        label = { Text("Not bad") })
+                    FilterChip(s.rotateThreshold == Verdict.SUSPICIOUS, { update { it.copy(rotateThreshold = Verdict.SUSPICIOUS) } }, label = { Text("Clean") })
+                    FilterChip(s.rotateThreshold == Verdict.BAD, { update { it.copy(rotateThreshold = Verdict.BAD) } }, label = { Text("Not bad") })
                 }
                 NumberField("Max IPs to try per connect", s.maxRotations) { v -> update { it.copy(maxRotations = v) } }
             }
-            Text(
-                "ipapi.is, proxycheck.io, ip-api.com and DNS blacklists work without keys. Keys raise limits and add " +
-                    "AbuseIPDB, IPQualityScore and Scamalytics.",
-                style = MaterialTheme.typography.bodySmall,
-            )
-            keys?.let { k ->
-                fun edit(f: (ApiKeys) -> ApiKeys) { keys = f(k); keysSaved = false }
-                KeyField("AbuseIPDB key", k.abuseIpDb) { v -> edit { it.copy(abuseIpDb = v) } }
-                KeyField("IPQualityScore key", k.ipqs) { v -> edit { it.copy(ipqs = v) } }
-                KeyField("proxycheck.io key", k.proxycheck) { v -> edit { it.copy(proxycheck = v) } }
-                KeyField("ipapi.is key", k.ipapiIs) { v -> edit { it.copy(ipapiIs = v) } }
+        }
+    }
+    SettingsGroup("API keys") {
+        Hint("ipapi.is, proxycheck.io, ip-api.com and DNS blacklists work without keys. Keys raise limits and add AbuseIPDB, IPQualityScore and Scamalytics.")
+        keys?.let { k ->
+            fun edit(f: (ApiKeys) -> ApiKeys) { keys = f(k); saved = false }
+            Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                KeyField("AbuseIPDB", k.abuseIpDb) { v -> edit { it.copy(abuseIpDb = v) } }
+                KeyField("IPQualityScore", k.ipqs) { v -> edit { it.copy(ipqs = v) } }
+                KeyField("proxycheck.io", k.proxycheck) { v -> edit { it.copy(proxycheck = v) } }
+                KeyField("ipapi.is", k.ipapiIs) { v -> edit { it.copy(ipapiIs = v) } }
                 OutlinedTextField(k.scamalyticsUser, { v -> edit { it.copy(scamalyticsUser = v.trim()) } },
                     label = { Text("Scamalytics username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 KeyField("Scamalytics key", k.scamalyticsKey) { v -> edit { it.copy(scamalyticsKey = v) } }
-                Button(onClick = { scope.launch { c.settings.setKeys(k); keysSaved = true } }, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (keysSaved) "Saved" else "Save keys")
+                Button(onClick = { scope.launch { c.settings.setKeys(k); saved = true } }, modifier = Modifier.fillMaxWidth()) {
+                    Text(if (saved) "Saved" else "Save keys")
                 }
-            }
-
-            Header("Data used")
-            for (p in listOf(Provider.IPROYAL, Provider.GEONODE).filter { it in accounts || usage[it.name] != null }) {
-                val u = usage[p.name]
-                Row(verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) {
-                        Text(p.label)
-                        Text(
-                            "↓ ${formatBytes(u?.rxBytes ?: 0)}  ↑ ${formatBytes(u?.txBytes ?: 0)}  total ${formatBytes((u?.rxBytes ?: 0) + (u?.txBytes ?: 0))}",
-                            style = MaterialTheme.typography.bodySmall,
-                        )
-                    }
-                    OutlinedButton(onClick = { scope.launch { c.stats.reset(p.name) } }) { Text("Reset") }
-                }
-            }
-            Text("Measured on-device; providers' billing may count protocol overhead differently.", style = MaterialTheme.typography.labelSmall)
-
-            Header("Backup & transfer")
-            BackupSection()
-
-            HorizontalDivider()
-            Row(Modifier.fillMaxWidth().clickable { advanced = !advanced }, verticalAlignment = Alignment.CenterVertically) {
-                Text("Advanced", style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary, modifier = Modifier.weight(1f))
-                Icon(if (advanced) Icons.Default.ExpandLess else Icons.Default.ExpandMore, null)
-            }
-            if (advanced) {
-                val cs = s.connection
-                if (status.isActive) {
-                    Text("Changes here apply on the next connect.", style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.primary)
-                }
-                Section("Protocol")
-                Choice(Protocol.entries, cs.protocol, { it.label }) { v -> updateConn { it.copy(protocol = v) } }
-                Section("Session")
-                Toggle("Sticky IP", "Keep the same IP until you tap New IP or the lifetime ends", cs.sticky) { v ->
-                    updateConn { it.copy(sticky = v) }
-                }
-                if (cs.sticky) NumberField("Session lifetime (minutes)", cs.lifetimeMinutes) { v -> updateConn { it.copy(lifetimeMinutes = v) } }
-                Section("Gateway (${s.provider.label})")
-                val preset = Presets.of(s.provider)
-                val gw = cs.gateways[s.provider] ?: Gateway()
-                fun setGw(g: Gateway) = updateConn { it.copy(gateways = it.gateways + (s.provider to g)) }
-                if (s.provider == Provider.GEONODE) {
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        listOf("" to "France", "us.proxy.geonode.io" to "US", "sg.proxy.geonode.io" to "Singapore").forEach { (h, label) ->
-                            FilterChip(gw.host == h, { setGw(gw.copy(host = h)); gatewayPicks++ }, label = { Text(label) })
-                        }
-                    }
-                }
-                key(s.provider, gatewayPicks) {
-                    TextSetting("Host", gw.host, placeholder = preset.defaultHost) { v -> setGw(gw.copy(host = v.trim())) }
-                }
-                key(s.provider) {
-                    NumberField("Port (0 = default ${preset.defaultPort(cs.protocol, cs.sticky)})", gw.port) { v -> setGw(gw.copy(port = v)) }
-                }
-                Section("Routing")
-                Choice(TunnelMode.entries, cs.tunnelMode, { if (it == TunnelMode.FULL) "All traffic" else "Proxy only" }) { v ->
-                    updateConn { it.copy(tunnelMode = v) }
-                }
-                Text(
-                    if (cs.tunnelMode == TunnelMode.FULL) "All TCP traffic and DNS go through the proxy (IPRoyal has no UDP; apps fall back to TCP)."
-                    else "Sets a system HTTP proxy (Android 10+). Only proxy-aware apps work; other traffic is blocked.",
-                    style = MaterialTheme.typography.bodySmall,
-                )
-                Choice(SplitMode.entries, cs.splitMode, {
-                    when (it) { SplitMode.ALL -> "All apps"; SplitMode.ONLY_SELECTED -> "Only selected"; SplitMode.EXCEPT_SELECTED -> "All except" }
-                }) { v -> updateConn { it.copy(splitMode = v) } }
-                if (cs.splitMode != SplitMode.ALL) {
-                    OutlinedButton(onClick = { pickingApps = true }, modifier = Modifier.fillMaxWidth()) { Text("Choose apps (${cs.apps.size} selected)") }
-                }
-                NumberField("Health check interval (seconds)", s.healthIntervalSec) { v -> update { it.copy(healthIntervalSec = v) } }
-                accounts[s.provider]?.let { CredentialPreview(Profile.from(it, s, s.sessionId.ifEmpty { "xxxxxxxx" }), it.password) }
             }
         }
     }
+}
+
+@Composable
+private fun UsageSettings() {
+    val c = LocalContext.current.container
+    val scope = rememberCoroutineScope()
+    val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
+    val usage by c.stats.totals.collectAsState(initial = emptyMap())
+    SettingsGroup {
+        val shown = listOf(Provider.IPROYAL, Provider.GEONODE).filter { it in accounts || usage[it.name] != null }
+        if (shown.isEmpty()) Hint("No traffic yet.")
+        shown.forEachIndexed { i, p ->
+            if (i > 0) GroupDivider()
+            val u = usage[p.name]
+            val rx = u?.rxBytes ?: 0; val tx = u?.txBytes ?: 0
+            SettingRow(p.label, "${formatBytes(rx + tx)} total · ↓ ${formatBytes(rx)} ↑ ${formatBytes(tx)}", trailing = {
+                TextButton(onClick = { scope.launch { c.stats.reset(p.name) } }) { Text("Reset", maxLines = 1) }
+            })
+        }
+    }
+    Hint("Measured on this device; providers' billing may count protocol overhead differently.", Modifier.padding(horizontal = 16.dp))
+}
+
+@Composable
+private fun AdvancedSettings(s: AppSettings, updateConn: ((ConnectionSettings) -> ConnectionSettings) -> Unit, onPickApps: () -> Unit) {
+    val c = LocalContext.current.container
+    val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
+    var gatewayPicks by remember { mutableStateOf(0) }
+    val cs = s.connection
+
+    SettingsGroup("Protocol") {
+        Column(Modifier.padding(16.dp)) {
+            Choice(Protocol.entries, cs.protocol, { it.label }) { v -> updateConn { it.copy(protocol = v) } }
+        }
+    }
+    SettingsGroup("Session") {
+        SwitchRow("Sticky IP", "Keep the same IP until you tap New IP or the lifetime ends", cs.sticky) { v -> updateConn { it.copy(sticky = v) } }
+        if (cs.sticky) Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {
+            NumberField("Session lifetime (minutes)", cs.lifetimeMinutes) { v -> updateConn { it.copy(lifetimeMinutes = v) } }
+            Hint("Max: IPRoyal 7 days (10080), Geonode 24 h (1440, applied automatically).", Modifier.padding(top = 4.dp))
+        }
+    }
+    SettingsGroup("Gateway · ${s.provider.label}") {
+        val preset = Presets.of(s.provider)
+        val gw = cs.gateways[s.provider] ?: Gateway()
+        fun setGw(g: Gateway) = updateConn { it.copy(gateways = it.gateways + (s.provider to g)) }
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            if (s.provider == Provider.GEONODE) {
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    listOf("" to "France", "us.proxy.geonode.io" to "US", "sg.proxy.geonode.io" to "Singapore").forEach { (h, label) ->
+                        FilterChip(gw.host == h, { setGw(gw.copy(host = h)); gatewayPicks++ }, label = { Text(label) })
+                    }
+                }
+            }
+            key(s.provider, gatewayPicks) {
+                TextSetting("Host", gw.host, placeholder = preset.defaultHost) { v -> setGw(gw.copy(host = v.trim())) }
+            }
+            key(s.provider) {
+                NumberField("Port (0 = default ${preset.defaultPort(cs.protocol, cs.sticky)})", gw.port) { v -> setGw(gw.copy(port = v)) }
+            }
+            accounts[s.provider]?.let { CredentialPreview(Profile.from(it, s, s.sessionId.ifEmpty { "xxxxxxxx" }), it.password) }
+        }
+    }
+    SettingsGroup("Routing") {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+            Choice(TunnelMode.entries, cs.tunnelMode, { if (it == TunnelMode.FULL) "All traffic" else "Proxy only" }) { v ->
+                updateConn { it.copy(tunnelMode = v) }
+            }
+            Text(
+                if (cs.tunnelMode == TunnelMode.FULL) "All TCP traffic and DNS go through the proxy (IPRoyal has no UDP; apps fall back to TCP)."
+                else "Sets a system HTTP proxy (Android 10+). Only proxy-aware apps work; other traffic is blocked.",
+                style = MaterialTheme.typography.bodySmall,
+            )
+        }
+    }
+    SettingsGroup("Apps") {
+        Column(Modifier.padding(16.dp)) {
+            Choice(SplitMode.entries, cs.splitMode, {
+                when (it) { SplitMode.ALL -> "All apps"; SplitMode.ONLY_SELECTED -> "Only selected"; SplitMode.EXCEPT_SELECTED -> "All except" }
+            }) { v -> updateConn { it.copy(splitMode = v) } }
+        }
+        if (cs.splitMode != SplitMode.ALL) {
+            GroupDivider()
+            SettingRow("Choose apps", "${cs.apps.size} selected", onClick = onPickApps)
+        }
+    }
+    Hint("Changes apply to a running connection automatically.", Modifier.padding(horizontal = 16.dp))
 }
 
 @Composable
 private fun CredentialPreview(p: Profile, basePassword: String) {
     val ep = Presets.build(p)
     val masked = if (basePassword.isNotEmpty() && ep.password.startsWith(basePassword)) "••••••" + ep.password.removePrefix(basePassword) else "••••••"
-    Card(Modifier.fillMaxWidth()) {
-        Column(Modifier.padding(12.dp)) {
-            Text("Generated proxy credentials", style = MaterialTheme.typography.labelMedium)
-            Text("${ep.protocol.label.lowercase()}://${ep.host}:${ep.port}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-            Text("user: ${ep.username}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-            Text("pass: $masked", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
-        }
-    }
-}
-
-@Composable
-private fun Header(t: String) {
-    Column {
-        HorizontalDivider(Modifier.padding(bottom = 8.dp))
-        Text(t, style = MaterialTheme.typography.titleSmall, color = MaterialTheme.colorScheme.primary)
+    Column(Modifier.padding(top = 4.dp)) {
+        Text("Generated credentials", style = MaterialTheme.typography.labelMedium)
+        Text("${ep.protocol.label.lowercase()}://${ep.host}:${ep.port}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        Text("user: ${ep.username}", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
+        Text("pass: $masked", fontFamily = FontFamily.Monospace, style = MaterialTheme.typography.bodySmall)
     }
 }
 
 /** Keeps its own text state: settings are persisted asynchronously, so binding straight to them races typing. */
 @Composable
-private fun TextSetting(label: String, value: String, placeholder: String = "", onChange: (String) -> Unit) {
+internal fun TextSetting(label: String, value: String, placeholder: String = "", onChange: (String) -> Unit) {
     var text by remember { mutableStateOf(value) }
     OutlinedTextField(
         text, { v -> text = v; onChange(v) }, singleLine = true,
@@ -286,7 +358,7 @@ private fun TextSetting(label: String, value: String, placeholder: String = "", 
 }
 
 @Composable
-private fun NumberField(label: String, value: Int, onChange: (Int) -> Unit) {
+internal fun NumberField(label: String, value: Int, onChange: (Int) -> Unit) {
     var text by remember { mutableStateOf(value.toString()) }
     OutlinedTextField(
         text, { v -> text = v.filter(Char::isDigit).take(5); text.toIntOrNull()?.let(onChange) },

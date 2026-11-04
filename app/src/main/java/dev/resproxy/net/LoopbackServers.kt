@@ -13,6 +13,7 @@ import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 import java.util.concurrent.atomic.AtomicLong
+import dev.resproxy.data.Protocol
 
 /** A tiny thread-per-connection TCP server bound to 127.0.0.1 on an ephemeral port. */
 abstract class LoopbackServer(private val name: String) {
@@ -57,20 +58,25 @@ abstract class LoopbackServer(private val name: String) {
 
     protected abstract fun handle(client: Socket)
 
-    /** Bidirectional copy; returns once both directions have finished. */
-    protected fun relay(client: Socket, remote: Socket, clientIn: InputStream = client.getInputStream()) {
+    /** Bidirectional copy; returns (bytes up, bytes down) once both directions have finished. */
+    protected fun relay(
+        client: Socket, remote: Socket, clientIn: InputStream = client.getInputStream(), onFirstDown: () -> Unit = {},
+    ): Pair<Long, Long> {
         open += remote
         try {
-            val up = pool.submit { copy(clientIn, remote.getOutputStream(), bytesUp); runCatching { remote.shutdownOutput() } }
-            copy(remote.getInputStream(), client.getOutputStream(), bytesDown)
+            val upCount = AtomicLong()
+            val up = pool.submit { copy(clientIn, remote.getOutputStream(), bytesUp, upCount, null); runCatching { remote.shutdownOutput() } }
+            val down = AtomicLong()
+            copy(remote.getInputStream(), client.getOutputStream(), bytesDown, down, onFirstDown)
             runCatching { client.shutdownOutput() }
             runCatching { up.get() }
+            return upCount.get() to down.get()
         } finally {
             remote.closeQuietly(); open -= remote
         }
     }
 
-    private fun copy(inp: InputStream, out: OutputStream, counter: AtomicLong) {
+    private fun copy(inp: InputStream, out: OutputStream, counter: AtomicLong, local: AtomicLong, onFirst: (() -> Unit)?) {
         val buf = ByteArray(32 * 1024)
         try {
             while (true) {
@@ -78,6 +84,7 @@ abstract class LoopbackServer(private val name: String) {
                 if (n < 0) break
                 out.write(buf, 0, n)
                 counter.addAndGet(n.toLong())
+                if (local.getAndAdd(n.toLong()) == 0L) onFirst?.invoke()
             }
             out.flush()
         } catch (_: IOException) {
@@ -90,10 +97,38 @@ abstract class LoopbackServer(private val name: String) {
 }
 
 /**
- * Unauthenticated local SOCKS5 (CONNECT only) that forwards through [upstream].
- * Lets hev-socks5-tunnel use HTTP-only upstream proxies.
+ * What the TUN relay has seen recently: lets the health loop tell "the proxy answers probes" apart
+ * from "apps' connections actually work".
  */
-class LocalSocksServer(private val upstream: Upstream) : LoopbackServer("socks-bridge") {
+class RelayHealth {
+    /** Connections whose upstream opened and that received data back. */
+    val ok = AtomicLong()
+    /** Upstream refused/failed, or the app sent data and got nothing back before closing. */
+    val failed = AtomicLong()
+    @Volatile var lastOkAt = 0L
+    @Volatile var lastFailAt = 0L
+    @Volatile var lastError: String? = null
+
+    private val failedHosts = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
+    fun success() { ok.incrementAndGet(); lastOkAt = System.currentTimeMillis() }
+    fun failure(host: String, why: String?) {
+        val now = System.currentTimeMillis()
+        failed.incrementAndGet(); lastFailAt = now; lastError = "$host: $why"
+        failedHosts[host] = now
+        if (failedHosts.size > 64) failedHosts.entries.removeIf { now - it.value > 120_000 }
+    }
+
+    /** Different targets that failed since [since]: one dead website must not look like a dead connection. */
+    fun distinctFailedHosts(since: Long) = failedHosts.count { it.value >= since }
+}
+
+/**
+ * Local unauthenticated SOCKS5 that hev-socks5-tunnel talks to. Every app connection passes through
+ * here, so upstream addresses are resolved fresh (with DoH fallback) and [health] reflects real traffic.
+ * UDP ASSOCIATE is passed through to a SOCKS5 upstream when it is reached directly.
+ */
+class LocalSocksServer(private val upstream: Upstream, val health: RelayHealth = RelayHealth()) : LoopbackServer("socks-relay") {
 
     override fun handle(client: Socket) {
         val inp = DataInputStream(client.getInputStream())
@@ -111,16 +146,37 @@ class LocalSocksServer(private val upstream: Upstream) : LoopbackServer("socks-b
             else -> return
         }
         val port = inp.readUnsignedShort()
-        if (cmd != 1) {
-            out.write(reply(7)); return
+        when (cmd) {
+            1 -> connect(client, inp, out, host, port)
+            3 -> udpAssociate(client, inp, out)
+            else -> out.write(reply(7))
         }
+    }
+
+    private fun connect(client: Socket, inp: DataInputStream, out: OutputStream, host: String, port: Int) {
         val remote = try {
             upstream.open(host, port)
         } catch (e: IOException) {
-            out.write(reply(5)); return
+            if (e !is SocksRefusedException) health.failure(host, e.message) // target refused ≠ broken proxy
+            out.write(reply(if (e is SocksRefusedException) e.code else 5)); return
         }
         out.write(reply(0))
-        relay(client, remote, inp)
+        var gotData = false
+        val (up, _) = relay(client, remote, inp) { gotData = true; health.success() }
+        if (!gotData && up > 0) health.failure(host, "no response")
+    }
+
+    private fun udpAssociate(client: Socket, inp: DataInputStream, out: OutputStream) {
+        val ep = upstream.endpoint
+        if (ep.protocol != Protocol.SOCKS5 || ep.host == "127.0.0.1") { out.write(reply(7)); return }
+        val (ctrl, relayAddr) = try {
+            Socks5Client.udpAssociate(ep, 10_000)
+        } catch (e: IOException) {
+            out.write(reply(7)); return
+        }
+        val a = relayAddr.address.address
+        out.write(byteArrayOf(5, 0, 0, if (a.size == 4) 1 else 4) + a + byteArrayOf((relayAddr.port shr 8).toByte(), relayAddr.port.toByte()))
+        relay(client, ctrl, inp) // keeps the association alive until either side closes
     }
 
     private fun reply(code: Int) = byteArrayOf(5, code.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)

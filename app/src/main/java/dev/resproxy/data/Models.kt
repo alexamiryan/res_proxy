@@ -142,17 +142,60 @@ data class AppSettings(
     val healthIntervalSec: Int = 30,
     /** Last location used with each provider, restored when switching back. */
     val savedLocations: Map<Provider, Location> = emptyMap(),
-    /** Route the upstream proxy connection through the imported WireGuard VPN ([VpnChain]). */
+    /** Route the upstream proxy connection through the VPN selected in [vpnExit]. */
     val chainEnabled: Boolean = false,
+    /** Which VPN to chain through: `wg:<VpnProfile.id>` or `mullvad:<country | country-city | relay hostname>`. */
+    val vpnExit: String = "",
+    /** Keep local-network traffic (printers, Chromecast, router UI) off the VPN. */
+    val bypassLan: Boolean = true,
 ) {
     companion object {
         const val SCHEMA = 2
     }
 }
 
-/** An imported WireGuard `.conf`; stored encrypted (it contains the private key). */
+/** Legacy single imported WireGuard config (backups made before VPN profiles). */
 @Serializable
 data class VpnChain(val name: String = "", val config: String = "")
+
+/** An imported WireGuard `.conf`; stored encrypted (it contains the private key). */
+@Serializable
+data class VpnProfile(
+    val id: String = UUID.randomUUID().toString().take(8),
+    val name: String = "",
+    val config: String = "",
+)
+
+/** This install's WireGuard key registered on the Mullvad account (per install, never synced). */
+@Serializable
+data class MullvadDevice(
+    val id: String = "",
+    val name: String = "",
+    val privateKey: String = "",
+    val publicKey: String = "",
+    val ipv4: String = "",
+    val ipv6: String = "",
+)
+
+@Serializable
+data class MullvadAccount(val number: String = "", val expiry: String = "", val device: MullvadDevice? = null)
+
+/** Parsed [AppSettings.vpnExit]. */
+sealed interface VpnExit {
+    data class Imported(val id: String) : VpnExit
+    /** [code]: `se`, `se-got` or a relay hostname like `se-got-wg-001`. */
+    data class Mullvad(val code: String) : VpnExit
+
+    companion object {
+        fun parse(s: String): VpnExit? = when {
+            s.startsWith("wg:") -> Imported(s.removePrefix("wg:"))
+            s.startsWith("mullvad:") -> Mullvad(s.removePrefix("mullvad:"))
+            else -> null
+        }
+        fun imported(id: String) = "wg:$id"
+        fun mullvad(code: String) = "mullvad:$code"
+    }
+}
 
 /** Cumulative bytes per provider, for providers that bill per GB. */
 @Serializable

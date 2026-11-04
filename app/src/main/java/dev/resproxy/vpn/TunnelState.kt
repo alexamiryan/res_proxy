@@ -29,6 +29,12 @@ data class TunnelStatus(
     val connectedAt: Long = 0,
     /** Name of the WireGuard VPN the proxy connection is chained through, if any. */
     val chainName: String? = null,
+    /** Round trip to the VPN server (in-tunnel ping), when chaining. */
+    val vpnPingMs: Long? = null,
+    /** Round trip to the proxy gateway (through the VPN when chaining). */
+    val proxyPingMs: Long? = null,
+    /** Times the connection was found not to be working and was rebuilt automatically. */
+    val repairs: Int = 0,
 ) {
     val isActive get() = phase != Phase.DISCONNECTED && phase != Phase.ERROR
 }
