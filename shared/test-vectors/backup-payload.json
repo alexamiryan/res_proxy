@@ -1,0 +1,49 @@
+{
+  "version": 1,
+  "createdAt": 1762300000000,
+  "settings": {
+    "schema": 3,
+    "provider": "GEONODE",
+    "location": { "country": "fr", "countryName": "France", "state": "", "stateName": "", "city": "paris", "cityName": "Paris" },
+    "sessionId": "",
+    "connection": {
+      "protocol": "HTTP",
+      "sticky": true,
+      "lifetimeMinutes": 720,
+      "gateways": { "GENERIC": { "host": "proxy.example.net", "port": 3128 } },
+      "tunnelMode": "FULL",
+      "splitMode": "EXCEPT_SELECTED",
+      "apps": ["com.example.bank"],
+      "siteSplitMode": "EXCEPT_SELECTED",
+      "sites": ["bank.example.com", "localhost.test"]
+    },
+    "killSwitch": true,
+    "autoConnect": false,
+    "wasConnected": false,
+    "recheckOnConnect": true,
+    "autoRotate": true,
+    "rotateThreshold": "BAD",
+    "maxRotations": 7,
+    "healthIntervalSec": 45,
+    "savedLocations": {
+      "IPROYAL": { "country": "us", "countryName": "United States", "state": "newyork", "stateName": "New York", "city": "", "cityName": "" }
+    },
+    "chainEnabled": true,
+    "vpnExit": "mullvad:se-got",
+    "bypassLan": false,
+    "sessions": {
+      "GEONODE|fr||paris": { "id": "ab12cd34", "createdAt": 1762290000000, "lifetimeMinutes": 720 }
+    }
+  },
+  "accounts": [
+    { "provider": "IPROYAL", "username": "ipuser", "password": "ippass", "apiToken": "iptoken", "apiLogin": "", "apiPassword": "" },
+    { "provider": "GEONODE", "username": "geonode_abc", "password": "gpass", "apiToken": "", "apiLogin": "me@example.com", "apiPassword": "dash" },
+    { "provider": "GENERIC", "username": "u", "password": "p:with:colons", "apiToken": "", "apiLogin": "", "apiPassword": "" }
+  ],
+  "chain": null,
+  "apiKeys": { "abuseIpDb": "abuse-key", "ipqs": "", "proxycheck": "pc-key", "ipapiIs": "", "scamalyticsUser": "scamuser", "scamalyticsKey": "scamkey" },
+  "vpnProfiles": [
+    { "id": "a1b2c3d4", "name": "Proton NL", "config": "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.2.0.2/32\nDNS = 10.2.0.1\n\n[Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = nl.example.net:51820\n" }
+  ],
+  "mullvadNumber": "1234567890123456"
+}

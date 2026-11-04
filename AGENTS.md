@@ -6,12 +6,24 @@ same commit (a commit hook checks for this, see the end of this file).
 
 ## What this is
 
-ResProxy is a sideloaded Android app that works like a VPN client. It sends phone traffic through residential
-proxies (IPRoyal, Geonode, custom), optionally reaching the proxy through a WireGuard VPN first (imported `.conf`
-profiles or a Mullvad account). It checks the exit IP's reputation (Clean / Suspicious / Bad) and can rotate
-the IP until the result is acceptable. The package is `dev.resproxy`, minSdk 26, target/compileSdk 36.
+ResProxy sends traffic through residential proxies (IPRoyal, Geonode, custom), optionally reaching the proxy through
+a WireGuard VPN first (imported `.conf` profiles or a Mullvad account). It checks the exit IP's reputation
+(Clean / Suspicious / Bad) and can rotate the IP until the result is acceptable. One repo, several platforms:
 
-## Traffic path
+| Folder | Platform |
+|---|---|
+| `android/` | Sideloaded Android VPN app. Package `dev.resproxy`, minSdk 26, target/compileSdk 36 |
+| `chrome/` | Chrome MV3 extension (TypeScript + Preact, esbuild). Works in Edge/Brave/Chromium too |
+| `native/wgbridge/` | Go: Android WireGuard JNI lib (root package), `cmd/resproxy-helper` (native-messaging helper for the extension), `cmd/wgtestserver` / `cmd/testproxy` (test peers) |
+| `shared/` | `FORMAT.md` (backup, settings schema, presets, verdict rules) + `test-vectors/` that every platform's tests read |
+| `ios/` (future) | Implements `shared/FORMAT.md`; WireGuard can come from `native/` via gomobile (wireguard-go is what WireGuard's own iOS app uses) |
+
+**Cross-platform rule:** anything in `shared/FORMAT.md` (backup format, settings fields and defaults, preset
+syntax, verdict rules) changes on every platform in the same commit, with the vectors regenerated. New settings
+fields get defaults and are added to Android's `Models.kt` even when only one platform uses them, so backups
+round-trip (e.g. `connection.sites` is Chrome-only, `connection.apps` Android-only).
+
+## Android traffic path
 
 ```
 apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServer relay (127.0.0.1)
@@ -28,6 +40,28 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 - Proxy-only mode: a system HTTP proxy points at `LocalHttpProxy`; apps that ignore it hit an unread TUN and
   are blocked.
 - `LocalHttpProxy` is also how the app does its own exit-IP checks and probes through the proxy.
+
+## Chrome traffic path
+
+```
+tabs → Chrome proxy (PAC, chrome.proxy) → residential proxy (HTTP, auth via webRequest.onAuthRequired)          direct mode
+tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [WireGuard netstack →] proxy (SOCKS5/HTTP)  helper mode
+```
+
+- `background/tunnel.ts` is the `ProxyVpnService` counterpart (connect, gate, check + auto-rotate, health + repair,
+  live settings). Runtime state lives in `chrome.storage.session` so it survives service-worker restarts; the UI reads
+  the status from there.
+- The PAC is set before any upstream I/O (first a dead `127.0.0.1:9` target) and only cleared on disconnect / kill
+  switch off. It only does string matching (no `dnsResolve`), so evaluating it can't leak DNS.
+- The traffic gate is declarativeNetRequest **session** rules: tab page loads redirect to `blocked.html` (which
+  continues to the page once the gate opens), other tab requests are blocked; requests with `tabId -1` (the
+  extension's own checks) pass. LAN and split-excluded sites get allow rules.
+- Helper mode is used when the helper is installed (and `prefs.useHelper`), and is required for VPN chaining and
+  SOCKS5 with a password. Without it IPRoyal/Geonode silently use their HTTP gateway. The helper also does the
+  extension's direct API calls (`fetch`, like Android's sockets outside the VPN), system-resolver DNSBL lookups,
+  ICMP pings and byte counting; it exits when Chrome closes the native port.
+- Reputation and IP-echo requests from the worker go through Chrome's proxy (so through the exit IP); with the
+  helper, reputation APIs go direct first.
 
 ## Invariants (don't break these)
 
@@ -50,9 +84,12 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
    number travels.
 7. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
    (`data/SecretStore.kt`). Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
-8. Never show the proxy password, the API keys or the backup passphrase in UI or logs.
+8. Never show the proxy password, the API keys or the backup passphrase in UI or logs (including the extension's
+   Diagnostics log in `chrome.storage.session`).
+9. Chrome: secrets are AES-GCM encrypted with a non-extractable key in IndexedDB (`background/store.ts`); only the
+   service worker writes storage (pages go through the message API in `shared/protocol.ts`).
 
-## Layout
+## Layout (Android, under `android/`)
 
 | Path | What |
 |---|---|
@@ -65,19 +102,47 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 | `reputation/` | Sources, parsers, `ReputationAggregator` verdict rules |
 | `ui/` | Compose screens. Settings = hub (`SettingsScreen`) + pages (`SettingsPageScreen`, `SettingsPage` enum: VPN, Split tunnelling, Protection, …); building blocks `SettingsGroup` / `SettingRow` / `SwitchRow` / `Hint` in `Components.kt`; VPN page and home VPN picker in `VpnSection.kt` |
 | `app/src/main/jni/` | ndk-build for vendored hev-socks5-tunnel 2.19.3 (symlinks replaced by file copies) |
-| `wgbridge/` | Go c-shared lib (wireguard-go + gVisor netstack): `nativeStart/Forward/Stop/Status/Ping`. `cmd/wgtestserver` is a test peer |
-| `app/src/test/` | JVM unit tests (no device needed) |
+| `app/src/test/` | JVM unit tests (no device needed). `SharedVectorsTest` reads `../shared/test-vectors` |
+
+## Layout (Chrome, under `chrome/`)
+
+| Path | What |
+|---|---|
+| `src/core/` | Platform-neutral ports of the Kotlin logic: `models` (settings, normalization, sessions), `backup`, `presets`, `locations`, `reputation` (parsers, DNSBL, verdict), `vpn` (wg-quick parser, Mullvad API/relays), `pac` |
+| `src/background/` | `main.ts` (listeners, message API, catalogs, backup), `tunnel.ts` (controller), `browser.ts` (PAC, DNR gate, WebRTC, badge), `helper.ts` (native messaging client), `store.ts`, `log.ts` |
+| `src/ui/` | `popup.tsx` (home), `options.tsx` (settings pages), `pickers.tsx` (location, VPN), `components.tsx`, `blocked.ts` |
+| `src/shared/protocol.ts` | Status type and the page ↔ worker message API |
+| `static/` | manifest (version and `key` stamped by `build.mjs`), HTML, `styles.css` |
+| `test/` | vitest unit tests (`core.test.ts`, shared vectors) and `e2e.mjs` (real Chromium + `cmd/testproxy`) |
+| `extension-key.pub`, `extension-id.txt` | Public key fixing the extension ID `hncfepeimcljgcafphgmcjhigjcfdemc` (the helper's `allowed_origins`); unpacked installs need no private key |
+
+## Layout (native, under `native/wgbridge/`)
+
+| Path | What |
+|---|---|
+| `main.go` | Android c-shared lib (wireguard-go + gVisor netstack): `nativeStart/Forward/Stop/Status/Ping` |
+| `cmd/resproxy-helper/` | Extension helper: native messaging (`main.go`), local proxy (`proxy.go`), SOCKS5/HTTP CONNECT client (`upstream.go`), WireGuard (`wg.go`), fetch/DNS/ping (`misc.go`), self-registration (`install_*.go`) |
+| `cmd/wgtestserver/` | WireGuard test peer (also used by `wg_chain_test.go`) |
+| `cmd/testproxy/`, `internal/testproxy/` | HTTP-CONNECT + SOCKS5 test proxy with auth that logs each login |
 
 ## Build and test (Windows host)
 
-- JDK 21 is pinned in `gradle.properties`. `local.properties` (git-ignored) needs `sdk.dir=D:/android/AndroidSDK`
-  and `go.dir=D:/android/go`. Use forward slashes in both.
-- `./gradlew.bat testDebugUnitTest assembleDebug`. The `buildWgBridge` task cross-compiles Go for 4 ABIs with
-  the NDK clang (it runs before `preBuild`). Without Go, the APK builds without WireGuard.
+- Android: JDK 21 is pinned in `android/gradle.properties`. `android/local.properties` (git-ignored) needs
+  `sdk.dir=D:/android/AndroidSDK` and `go.dir=D:/android/go`. Use forward slashes in both.
+  `cd android && ./gradlew.bat testDebugUnitTest assembleDebug`. The `buildWgBridge` task cross-compiles
+  `../native/wgbridge` for 4 ABIs with the NDK clang (before `preBuild`). Without Go, the APK builds without WireGuard.
 - Go tooling: `PATH=/d/android/go/bin:$PATH GOPATH=/d/android/gopath GOMODCACHE=/d/android/gopath/pkg/mod`.
-  `go vet` needs `CGO_ENABLED=1`, which has no host C compiler, so let Gradle build it.
-- Add or extend unit tests for pure logic (parsers, presets, routes, crypto, relay behaviour). The suite must
-  stay green.
+  The root package needs cgo + jni.h (no host C compiler), so vet/test only `./cmd/... ./internal/...` with
+  `CGO_ENABLED=0`. `wg_chain_test.go` is manual (needs a running `cmd/wgtestserver`, see the file).
+- Chrome: `cd chrome && npm ci && npx tsc --noEmit && npm test && node build.mjs` (→ `dist/extension`;
+  `--zip` adds the release zip, `--watch` rebuilds). End-to-end: build, then
+  `CHROMIUM=$LOCALAPPDATA/ms-playwright/chromium-1228/chrome-win64/chrome.exe node test/e2e.mjs` (Playwright's
+  open-source Chromium; branded Chrome ignores `--load-extension`). For `--helper`, build the helper and run
+  `resproxy-helper install` first, `uninstall` afterwards.
+- Regenerate backup vectors after a format change: `WRITE_VECTORS=1` for both `npm test` and
+  `./gradlew testDebugUnitTest --tests '*writeAndroidVector'`.
+- Add or extend unit tests for pure logic (parsers, presets, routes, crypto, relay behaviour) on every platform
+  that has it. All suites must stay green.
 
 ## Git, push and releases
 
@@ -85,13 +150,15 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 - Remote git operations (push, fetch) run in WSL, where the SSH key is unlocked; local git and builds stay on
   Windows. The Windows `gh` CLI is logged in and handles the GitHub API.
 - **Every push is a release:** run `scripts/release.sh` (Git Bash) instead of a bare push. It needs a clean
-  tree on `main`, runs the tests, builds the debug APK, pushes via WSL and creates release `v0.1.<commit
-  count>` with `ResProxy-v….apk` attached and the commit subjects as notes.
-- `versionCode` is the commit count (`app/build.gradle.kts`), so each release installs over the previous one.
+  tree on `main`, runs all test suites, builds the debug APK, the extension zip and the helper for
+  windows/amd64, linux/amd64, darwin/arm64 and darwin/amd64, pushes via WSL and creates release
+  `v0.1.<commit count>` with all of them attached and the commit subjects as notes.
+- `versionCode` is the commit count (`android/app/build.gradle.kts`), so each release installs over the previous
+  one. The extension version is `0.1.<commit count>` too (stamped by `chrome/build.mjs`).
   The release ships the debug-signed APK (same key as the builds already on the phone; R8 release builds are
   untested).
 
-## Device testing
+## Device testing (Android)
 
 - adb: `D:/android/AndroidSDK/platform-tools/adb.exe`. In Git Bash, prefix `adb shell` commands with
   `MSYS_NO_PATHCONV=1`, otherwise `/sdcard/...` paths get rewritten.
@@ -147,17 +214,39 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 - Backup import must run in `appScope` and write accounts last: saving accounts swaps the first-run UI out
   and cancels composition-scoped coroutines.
 - `kotlinx.serialization` with `encodeDefaults = true`, `ignoreUnknownKeys = true`. Add new settings fields
-  with defaults; bump `AppSettings.SCHEMA` only when old values must be overridden.
+  with defaults; bump `AppSettings.SCHEMA` only when old values must be overridden (and mirror the upgrade in
+  `chrome/src/core/models.ts` `normSettings`).
+
+### Chrome extension
+
+- **Chrome caches proxy credentials per proxy host** and keeps sending them preemptively: a new session's
+  password/username would never be used, and a wrong password goes unnoticed while the cached one works. Clearing the
+  proxy origin's cookies (`browsingData.remove({origins}, {cookies})`) also clears its HTTP auth cache and makes
+  Chrome open new connections; that's done on every credential change in direct mode. Side effect: cookies of the
+  provider's site (e.g. an iproyal.com dashboard login) go too. Helper mode avoids all of this (constant token).
+- declarativeNetRequest rejects a `regexFilter` whose compiled form exceeds 2 KB: keep LAN patterns as several small
+  rules. Write them with `String.raw` (in a plain string `'\.'` is just `.`).
+- Native messaging replies carry `ok` (success flag); never use `ok` as a field name in a reply payload (the helper's
+  status uses `conns` / `connFails`).
+- Count relay bytes as they flow (`countWriter`), not when a tunnel closes: Chrome keeps tunnels open for minutes.
+- MV3 workers are suspended after ~30 s idle. Direct mode resumes from `chrome.storage.session` on the next alarm /
+  auth event; a helper connection dies with the worker, so the worker reconnects. The open native port keeps the
+  worker alive while connected through the helper.
+- When testing, page loads can come from the HTTP cache (no proxy login at all): cache-bust URLs. In the agent
+  sandbox the test proxy can only reach allow-listed sites (example.com works, api.ipify.org doesn't).
+- `go run` leaves its child process running when killed: tests build `cmd/testproxy` and run the binary.
 
 ## Conventions
 
 - Kotlin, Compose Material3, coroutines/Flow, manual DI. No Hilt, no new heavy dependencies without reason.
 - User-facing text is plain, short and specific. Error messages say what to do next.
 - Line endings LF (`.gitattributes`), except `*.bat`.
+- Chrome: Preact function components, no state library. Core logic stays in `src/core` (no `chrome.*` there) so it
+  is unit-testable and mirrors the Kotlin. TypeScript strict; `npx tsc --noEmit` must be clean.
 
 ## Keeping this file updated
 
 `.claude/settings.json` registers a `PreToolUse` hook (`.claude/hooks/agents-md-check.sh`) on `git commit`.
-When staged changes touch source, build or native files but not `AGENTS.md`, the commit is blocked with a
+When staged changes touch `android/`, `chrome/` sources, `native/`, `shared/` or `scripts/` but not `AGENTS.md`, the commit is blocked with a
 reminder to review this file. If nothing here needs to change, the commit can go through with
 `AGENTS_MD_OK=1 git commit …`.

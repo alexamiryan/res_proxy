@@ -1,0 +1,19 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Waiting for a checked IP · ResProxy</title>
+<link rel="stylesheet" href="styles.css">
+</head>
+<body class="blocked-page">
+<main class="blocked">
+  <img src="icons/icon128.png" alt="" width="64" height="64">
+  <h1 id="title">Waiting for a checked IP</h1>
+  <p id="msg">ResProxy blocks pages until the proxy's exit IP passes the reputation check, so nothing loads through an unchecked or bad IP.</p>
+  <p class="muted" id="target"></p>
+  <p class="muted small">This page loads by itself once the IP is clean.</p>
+</main>
+<script type="module" src="blocked.js"></script>
+</body>
+</html>

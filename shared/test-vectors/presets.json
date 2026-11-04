@@ -1,0 +1,40 @@
+{
+  "_comment": "Proxy credentials each provider preset must produce. Input = Profile fields; host/port 0/'' = preset default.",
+  "cases": [
+    {
+      "name": "iproyal sticky with full targeting",
+      "profile": { "provider": "IPROYAL", "protocol": "SOCKS5", "host": "", "port": 0, "username": " user1 ", "password": "secret", "country": "US", "state": "New York", "city": "New York", "sticky": true, "lifetimeMinutes": 10080, "sessionId": "ab12cd34" },
+      "endpoint": { "host": "geo.iproyal.com", "port": 32325, "protocol": "SOCKS5", "username": "user1", "password": "secret_country-us_state-newyork_city-newyork_session-ab12cd34_lifetime-7d" }
+    },
+    {
+      "name": "iproyal strips pasted params, hours lifetime, http",
+      "profile": { "provider": "IPROYAL", "protocol": "HTTP", "host": "", "port": 0, "username": "user1", "password": "secret_country-de_session-old_lifetime-1h", "country": "gb", "state": "", "city": "", "sticky": true, "lifetimeMinutes": 120, "sessionId": "zz99yy88" },
+      "endpoint": { "host": "geo.iproyal.com", "port": 12321, "protocol": "HTTP", "username": "user1", "password": "secret_country-gb_session-zz99yy88_lifetime-2h" }
+    },
+    {
+      "name": "iproyal rotating, minutes lifetime ignored",
+      "profile": { "provider": "IPROYAL", "protocol": "HTTP", "host": "custom.gw", "port": 9999, "username": "u", "password": "p", "country": "", "state": "", "city": "", "sticky": false, "lifetimeMinutes": 45, "sessionId": "ab12cd34" },
+      "endpoint": { "host": "custom.gw", "port": 9999, "protocol": "HTTP", "username": "u", "password": "p" }
+    },
+    {
+      "name": "iproyal minutes lifetime",
+      "profile": { "provider": "IPROYAL", "protocol": "SOCKS5", "host": "", "port": 0, "username": "u", "password": "p", "country": "", "state": "", "city": "", "sticky": true, "lifetimeMinutes": 45, "sessionId": "s1" },
+      "endpoint": { "host": "geo.iproyal.com", "port": 32325, "protocol": "SOCKS5", "username": "u", "password": "p_session-s1_lifetime-45m" }
+    },
+    {
+      "name": "geonode sticky http caps lifetime at 24h",
+      "profile": { "provider": "GEONODE", "protocol": "HTTP", "host": "", "port": 0, "username": "geonode_abc-type-residential-country-us", "password": " gp ", "country": "fr", "state": "", "city": "Paris", "sticky": true, "lifetimeMinutes": 10080, "sessionId": "ab12cd34" },
+      "endpoint": { "host": "proxy.geonode.io", "port": 10000, "protocol": "HTTP", "username": "geonode_abc-type-residential-country-fr-city-paris-session-ab12cd34-lifetime-1440", "password": "gp" }
+    },
+    {
+      "name": "geonode rotating socks5",
+      "profile": { "provider": "GEONODE", "protocol": "SOCKS5", "host": "", "port": 0, "username": "geonode_abc", "password": "gp", "country": "", "state": "", "city": "", "sticky": false, "lifetimeMinutes": 30, "sessionId": "" },
+      "endpoint": { "host": "proxy.geonode.io", "port": 11000, "protocol": "SOCKS5", "username": "geonode_abc-type-residential", "password": "gp" }
+    },
+    {
+      "name": "generic verbatim",
+      "profile": { "provider": "GENERIC", "protocol": "SOCKS5", "host": " 10.0.0.5 ", "port": 0, "username": " u ", "password": " p ", "country": "us", "state": "", "city": "", "sticky": true, "lifetimeMinutes": 30, "sessionId": "x" },
+      "endpoint": { "host": "10.0.0.5", "port": 1080, "protocol": "SOCKS5", "username": "u", "password": " p " }
+    }
+  ]
+}
