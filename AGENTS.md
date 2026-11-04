@@ -34,15 +34,17 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 1. **No leaks.** In full-tunnel mode the TUN is established before any upstream I/O, and it stays up across
    rotations, location and settings changes, repairs and outages. A reconnect keeps the old TUN fd open until
    the new one is established.
-2. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
+2. **Background jobs never crash the process.** The service scope has a `CoroutineExceptionHandler` that
+   logs and reconnects; an uncaught exception would drop the VPN with nothing left to restore it.
+3. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
    retrying. Off: failures disconnect.
-3. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
+4. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
    That would show the real IP to the proxy.
-4. Mullvad device keys are **per install**: `MullvadAccount.device` is never put in a backup. Only the account
+5. Mullvad device keys are **per install**: `MullvadAccount.device` is never put in a backup. Only the account
    number travels.
-5. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
+6. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
    (`data/SecretStore.kt`). Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
-6. Never show the proxy password, the API keys or the backup passphrase in UI or logs.
+7. Never show the proxy password, the API keys or the backup passphrase in UI or logs.
 
 ## Layout
 
@@ -55,7 +57,7 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 | `net/` | `Upstream` (SOCKS5/HTTP clients, RTT samples), `LoopbackServers` (relay, HTTP proxy, `RelayHealth`), `Resolver` (system DNS + DoH), `WireGuard` (config parser + JNI), `Mullvad` (API, relay list, wg-quick builder), `X25519`, `ProxyProbe`, `LatencyProbe` (parallel ICMP ping to every Mullvad relay / profile endpoint; results sort the Settings → VPN list and the home VPN picker) |
 | `provider/` | Credential presets per provider (`Presets.kt`), location catalogs (`ProviderLocations.kt`) |
 | `reputation/` | Sources, parsers, `ReputationAggregator` verdict rules |
-| `ui/` | Compose screens. Settings = hub (`SettingsScreen`) + pages (`SettingsPageScreen`, `SettingsPage` enum); building blocks `SettingsGroup` / `SettingRow` / `SwitchRow` / `Hint` in `Components.kt`; VPN page and home VPN picker in `VpnSection.kt` |
+| `ui/` | Compose screens. Settings = hub (`SettingsScreen`) + pages (`SettingsPageScreen`, `SettingsPage` enum: VPN, Split tunnelling, Protection, …); building blocks `SettingsGroup` / `SettingRow` / `SwitchRow` / `Hint` in `Components.kt`; VPN page and home VPN picker in `VpnSection.kt` |
 | `app/src/main/jni/` | ndk-build for vendored hev-socks5-tunnel 2.19.3 (symlinks replaced by file copies) |
 | `wgbridge/` | Go c-shared lib (wireguard-go + gVisor netstack): `nativeStart/Forward/Stop/Status/Ping`. `cmd/wgtestserver` is a test peer |
 | `app/src/test/` | JVM unit tests (no device needed) |
@@ -111,6 +113,16 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
   migrated the old 1440 default to 7 days.
 - Android's `/system/bin/ping` (iputils) has no `-4`/`-6` flags; IPv6 uses `ping6`. It works from the app
   sandbox, and because the app is excluded from its own VPN, it measures the real path even while connected.
+- Sticky sessions are remembered per provider + location (`AppSettings.sessions`, `withSession` /
+  `restoreSession`), so switching provider or location and back keeps the same exit IP until the session's
+  lifetime ends (Geonode: 24 h). Only "New IP" and auto-rotate make a new session. Changing the VPN keeps the
+  session too.
+- Geonode's location API (`monitor.geonode.com/.../targeting-options`) takes Basic auth with the dashboard
+  login or, if none is set, the base proxy username + password (`ProviderLocations.geonodeAuth`).
+- A city can be targeted without a state (both providers); with "Any state" the picker lists every city in
+  the country.
+- `LoopbackServer.stop` iterates the concurrent socket set directly: Kotlin `toList()` on it threw
+  `NoSuchElementException` when a connection closed mid-copy, which crashed the app during a repair.
 - Users paste whole proxy lines or usernames with targeting params. Presets strip existing params, and the UI
   shows the base username.
 - SOCKS reply codes 1–8 (`SocksRefusedException`) mean the target failed, not the proxy; they don't count as

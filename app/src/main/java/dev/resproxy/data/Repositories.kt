@@ -97,8 +97,7 @@ class SettingsRepository(private val store: DataStore<Preferences>, private val 
             provider = to,
             location = s.savedLocations[to] ?: Location(),
             savedLocations = s.savedLocations + (s.provider to s.location),
-            sessionId = "",
-        )
+        ).restoreSession()
     }
 
     /** Persists the schema upgrade, adopting [legacyLocation] if no location is set yet. */

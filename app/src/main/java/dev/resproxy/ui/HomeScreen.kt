@@ -62,6 +62,7 @@ import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.text.style.TextAlign
 import dev.resproxy.data.Location
 import dev.resproxy.data.Provider
+import dev.resproxy.provider.CatalogSource
 import dev.resproxy.provider.LocationCatalog
 import kotlinx.coroutines.launch
 import dev.resproxy.data.Verdict
@@ -107,7 +108,7 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSetti
 
     fun setLocation(loc: Location) {
         scope.launch {
-            c.settings.update { it.copy(location = loc, sessionId = "") }
+            c.settings.update { it.copy(location = loc).restoreSession() }
             TunnelController.applyLocation(ctx)
         }
     }
@@ -156,10 +157,10 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSetti
                     !locations.canFetch(account) && provider == Provider.IPROYAL ->
                         "Add your IPRoyal API token in Settings → Accounts to choose from the list of available cities."
                     !locations.canFetch(account) ->
-                        "Add your Geonode dashboard login in Settings → Accounts to choose from the list of states and cities."
+                        "Add your Geonode login in Settings → Accounts to choose from the list of states and cities."
                     else -> null
                 }
-                val freeText = !locations.canFetch(account)
+                val freeText = catalog.source == CatalogSource.BUILT_IN
                 // Geonode targets states in every country; IPRoyal only in the US (built-in list).
                 LocationCard(s.location, catalog, hint, freeTextCities = freeText,
                     freeTextStates = freeText && provider == Provider.GEONODE, onChange = ::setLocation)
@@ -238,7 +239,9 @@ private fun LocationCard(
     var picking by remember { mutableStateOf<Picking?>(null) }
     val country = catalog.country(loc.country)
     val state = country?.states?.firstOrNull { it.code == loc.state }
-    val cities = (state?.cities?.takeIf { it.isNotEmpty() } ?: country?.cities).orEmpty()
+    // A city can be picked without a state: then offer every city in the country.
+    val cities = state?.cities?.takeIf { it.isNotEmpty() }
+        ?: country?.let { c -> (c.cities + c.states.flatMap { it.cities }).distinctBy { it.code }.sortedBy { it.name } }.orEmpty()
 
     Card(Modifier.fillMaxWidth()) {
         Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp)) {

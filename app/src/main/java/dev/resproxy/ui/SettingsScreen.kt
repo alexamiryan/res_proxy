@@ -21,6 +21,7 @@ import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Backup
+import androidx.compose.material.icons.automirrored.filled.CallSplit
 import androidx.compose.material.icons.filled.Tune
 import androidx.compose.material.icons.filled.VerifiedUser
 import androidx.compose.material.icons.filled.VpnLock
@@ -66,7 +67,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class SettingsPage(val title: String) {
-    VPN("VPN"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced")
+    VPN("VPN"), SPLIT("Split tunnelling"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced")
 }
 
 /** Settings home: accounts plus one row per page. */
@@ -99,6 +100,17 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit, onPage: (S
             ).joinToString(" · ").ifEmpty { "Not set up" }
             SettingRow("VPN", vpnSummary, Icons.Default.VpnLock, onClick = { onPage(SettingsPage.VPN) })
             GroupDivider()
+            val cs = s.connection
+            SettingRow(
+                "Split tunnelling",
+                when (cs.splitMode) {
+                    SplitMode.ALL -> "All apps use the proxy"
+                    SplitMode.ONLY_SELECTED -> "Only ${cs.apps.size} selected app" + if (cs.apps.size == 1) "" else "s"
+                    SplitMode.EXCEPT_SELECTED -> "All apps except ${cs.apps.size}"
+                },
+                Icons.AutoMirrored.Filled.CallSplit, onClick = { onPage(SettingsPage.SPLIT) },
+            )
+            GroupDivider()
             SettingRow(
                 "Protection",
                 listOfNotNull(if (s.killSwitch) "Kill switch on" else "Kill switch off", "LAN bypassed".takeIf { s.bypassLan }).joinToString(" · "),
@@ -117,7 +129,7 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit, onPage: (S
             GroupDivider()
             SettingRow("Data usage", "Traffic per provider", Icons.Default.DataUsage, onClick = { onPage(SettingsPage.USAGE) })
             GroupDivider()
-            SettingRow("Advanced", "Protocol, session, gateway, split tunnelling", Icons.Default.Tune, onClick = { onPage(SettingsPage.ADVANCED) })
+            SettingRow("Advanced", "Protocol, session, gateway, routing", Icons.Default.Tune, onClick = { onPage(SettingsPage.ADVANCED) })
         }
     }
 }
@@ -142,6 +154,7 @@ fun SettingsPageScreen(page: SettingsPage, onBack: () -> Unit) {
     Page(page.title, onBack) {
         when (page) {
             SettingsPage.VPN -> VpnSettings(s)
+            SettingsPage.SPLIT -> SplitSettings(s, ::updateConn) { pickingApps = true }
             SettingsPage.PROTECTION -> {
                 SettingsGroup {
                     SwitchRow("Kill switch", "Block traffic while connecting, repairing or when the proxy is down", s.killSwitch) { v ->
@@ -176,7 +189,7 @@ fun SettingsPageScreen(page: SettingsPage, onBack: () -> Unit) {
                 SettingsGroup { Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) { BackupSection() } }
             }
             SettingsPage.USAGE -> UsageSettings()
-            SettingsPage.ADVANCED -> AdvancedSettings(s, ::updateConn) { pickingApps = true }
+            SettingsPage.ADVANCED -> AdvancedSettings(s, ::updateConn)
         }
     }
 }
@@ -275,7 +288,7 @@ private fun UsageSettings() {
 }
 
 @Composable
-private fun AdvancedSettings(s: AppSettings, updateConn: ((ConnectionSettings) -> ConnectionSettings) -> Unit, onPickApps: () -> Unit) {
+private fun AdvancedSettings(s: AppSettings, updateConn: ((ConnectionSettings) -> ConnectionSettings) -> Unit) {
     val c = LocalContext.current.container
     val accounts by c.accounts.accounts.collectAsState(initial = emptyMap())
     var gatewayPicks by remember { mutableStateOf(0) }
@@ -326,11 +339,25 @@ private fun AdvancedSettings(s: AppSettings, updateConn: ((ConnectionSettings) -
             )
         }
     }
-    SettingsGroup("Apps") {
-        Column(Modifier.padding(16.dp)) {
+    Hint("Changes apply to a running connection automatically.", Modifier.padding(horizontal = 16.dp))
+}
+
+@Composable
+private fun SplitSettings(s: AppSettings, updateConn: ((ConnectionSettings) -> ConnectionSettings) -> Unit, onPickApps: () -> Unit) {
+    val cs = s.connection
+    SettingsGroup("Which apps use the proxy") {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
             Choice(SplitMode.entries, cs.splitMode, {
                 when (it) { SplitMode.ALL -> "All apps"; SplitMode.ONLY_SELECTED -> "Only selected"; SplitMode.EXCEPT_SELECTED -> "All except" }
             }) { v -> updateConn { it.copy(splitMode = v) } }
+            Text(
+                when (cs.splitMode) {
+                    SplitMode.ALL -> "Every app goes through the proxy."
+                    SplitMode.ONLY_SELECTED -> "Only the apps you choose go through the proxy; the rest connect directly."
+                    SplitMode.EXCEPT_SELECTED -> "The apps you choose connect directly; everything else goes through the proxy."
+                },
+                style = MaterialTheme.typography.bodySmall,
+            )
         }
         if (cs.splitMode != SplitMode.ALL) {
             GroupDivider()

@@ -151,10 +151,38 @@ data class AppSettings(
     val vpnExit: String = "",
     /** Keep local-network traffic (printers, Chromecast, router UI) off the VPN. */
     val bypassLan: Boolean = true,
+    /**
+     * Sticky session last used for each provider + location ([sessionKey]), so switching back keeps the same
+     * exit IP until the session's lifetime runs out. "New IP" replaces the entry.
+     */
+    val sessions: Map<String, SavedSession> = emptyMap(),
 ) {
+    /** Lifetime the provider actually applies (Geonode caps sticky sessions at 24 h). */
+    val effectiveLifetime: Int get() = connection.lifetimeMinutes.coerceIn(1, if (provider == Provider.GEONODE) 1440 else MAX_LIFETIME_MINUTES)
+
+    val sessionKey: String get() = listOf(provider.name, location.country, location.state, location.city).joinToString("|")
+
+    /** Sets [sessionId] and remembers it for the current provider + location. */
+    fun withSession(id: String, now: Long = System.currentTimeMillis()): AppSettings {
+        val same = sessions[sessionKey]?.takeIf { it.id == id && !it.expired(now) }
+        val kept = sessions.filterValues { !it.expired(now) } - sessionKey
+        val entry = same ?: SavedSession(id, now, effectiveLifetime)
+        return copy(sessionId = id, sessions = if (id.isEmpty()) kept else kept + (sessionKey to entry))
+    }
+
+    /** Picks up the remembered session for the current provider + location, or none (a new one gets made). */
+    fun restoreSession(now: Long = System.currentTimeMillis()): AppSettings =
+        copy(sessionId = sessions[sessionKey]?.takeIf { !it.expired(now) }?.id.orEmpty())
+
     companion object {
         const val SCHEMA = 3
     }
+}
+
+@Serializable
+data class SavedSession(val id: String, val createdAt: Long, val lifetimeMinutes: Int) {
+    /** A minute of margin so we never reuse a session the provider is about to drop. */
+    fun expired(now: Long) = now >= createdAt + (lifetimeMinutes - 1) * 60_000L
 }
 
 /** Legacy single imported WireGuard config (backups made before VPN profiles). */

@@ -36,6 +36,7 @@ import dev.resproxy.net.WireGuardConfig
 import dev.resproxy.provider.Presets
 import dev.resproxy.reputation.ReputationReport
 import dev.resproxy.ui.formatBytes
+import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.FlowPreview
@@ -66,7 +67,18 @@ import java.net.UnknownHostException
 class ProxyVpnService : VpnService() {
 
     private val container by lazy { (application as App).container }
-    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    /**
+     * A bug in any background job must never kill the process: that drops the VPN with nobody left to bring
+     * it back. Log it and reconnect instead.
+     */
+    private val crashHandler = CoroutineExceptionHandler { _, e ->
+        Log.e(TAG, "background job failed, reconnecting", e)
+        scope.launch {
+            delay(3000)
+            if (container.settings.current().wasConnected) connect()
+        }
+    }
+    private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashHandler)
     private val lock = Mutex()
 
     private var tun: ParcelFileDescriptor? = null
@@ -111,9 +123,14 @@ class ProxyVpnService : VpnService() {
                 lock.withLock { teardown() }
                 stopService()
             }
-            ACTION_ROTATE, ACTION_APPLY_LOCATION -> if (!active) stopService() else scope.launch {
+            ACTION_ROTATE -> if (!active) stopService() else scope.launch {
                 switchSession(Presets.newSessionId())
-                launchCheck(force = intent.action == ACTION_ROTATE)
+                launchCheck(force = true)
+            }
+            // Provider / location change: reuse that place's remembered session (same IP) if it's still alive.
+            ACTION_APPLY_LOCATION -> if (!active) stopService() else scope.launch {
+                switchSession(container.settings.current().sessionId.ifEmpty { Presets.newSessionId() })
+                launchCheck(force = false)
             }
             ACTION_RECHECK -> if (!active) stopService() else launchCheck(force = true)
             // ACTION_CONNECT, always-on start (SERVICE_INTERFACE) and sticky restarts (null intent)
@@ -204,8 +221,9 @@ class ProxyVpnService : VpnService() {
             tun = null
             teardown()
             var s = container.settings.current()
-            if (s.connection.sticky && s.sessionId.isEmpty()) {
-                container.settings.update { it.copy(sessionId = Presets.newSessionId()) }
+            if (s.connection.sticky) {
+                // Remember the session for this provider + location (new one if none), so switching back reuses it.
+                container.settings.update { it.withSession(it.sessionId.ifEmpty { Presets.newSessionId() }) }
                 s = container.settings.current()
             }
             val p = container.connectionProfile()
@@ -284,7 +302,7 @@ class ProxyVpnService : VpnService() {
     private suspend fun switchSession(sessionId: String) {
         lock.withLock {
             if (profile == null) return
-            container.settings.update { it.copy(sessionId = sessionId) }
+            container.settings.update { it.withSession(sessionId) }
             val p = container.connectionProfile(sessionId) ?: return
             profile = p
             val label = container.settings.current().location.label

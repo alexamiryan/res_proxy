@@ -52,7 +52,8 @@ abstract class LoopbackServer(private val name: String) {
     fun stop() {
         running = false
         runCatching { server.close() }
-        open.toList().forEach { it.closeQuietly() }
+        // The set changes while connections finish; its own iterator is safe for that (toList() isn't).
+        for (s in open) s.closeQuietly()
         pool.shutdownNow()
     }
 
