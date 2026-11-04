@@ -35,6 +35,8 @@ data class TunnelStatus(
     val proxyPingMs: Long? = null,
     /** Times the connection was found not to be working and was rebuilt automatically. */
     val repairs: Int = 0,
+    /** Apps' traffic is held back: the exit IP hasn't passed the reputation check (yet). */
+    val trafficBlocked: Boolean = true,
 ) {
     val isActive get() = phase != Phase.DISCONNECTED && phase != Phase.ERROR
 }

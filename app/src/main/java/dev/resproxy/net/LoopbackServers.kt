@@ -6,6 +6,7 @@ import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
 import java.net.InetAddress
+import java.net.InetSocketAddress
 import java.net.ServerSocket
 import java.net.Socket
 import java.net.URI
@@ -52,9 +53,14 @@ abstract class LoopbackServer(private val name: String) {
     fun stop() {
         running = false
         runCatching { server.close() }
+        closeConnections()
+        pool.shutdownNow()
+    }
+
+    /** Drops every open connection (e.g. the exit IP turned out bad) but keeps accepting new ones. */
+    fun closeConnections() {
         // The set changes while connections finish; its own iterator is safe for that (toList() isn't).
         for (s in open) s.closeQuietly()
-        pool.shutdownNow()
     }
 
     protected abstract fun handle(client: Socket)
@@ -129,7 +135,16 @@ class RelayHealth {
  * here, so upstream addresses are resolved fresh (with DoH fallback) and [health] reflects real traffic.
  * UDP ASSOCIATE is passed through to a SOCKS5 upstream when it is reached directly.
  */
-class LocalSocksServer(private val upstream: Upstream, val health: RelayHealth = RelayHealth()) : LoopbackServer("socks-relay") {
+class LocalSocksServer(
+    private val upstream: Upstream,
+    val health: RelayHealth = RelayHealth(),
+    /** Internet traffic waits here until the exit IP is known to be clean; null = always open. */
+    private val gate: TrafficGate? = null,
+    /** LAN bypass: connect local-network targets directly (needed when Android routes the LAN into the VPN). */
+    private val lanDirect: () -> Boolean = { false },
+    private val lanResolve: (String) -> InetAddress? = { LanTargets.resolve(it) },
+    private val gateWaitMs: Long = GATE_WAIT_MS,
+) : LoopbackServer("socks-relay") {
 
     override fun handle(client: Socket) {
         val inp = DataInputStream(client.getInputStream())
@@ -155,6 +170,21 @@ class LocalSocksServer(private val upstream: Upstream, val health: RelayHealth =
     }
 
     private fun connect(client: Socket, inp: DataInputStream, out: OutputStream, host: String, port: Int) {
+        val lan = if (lanDirect()) lanResolve(host) else null
+        if (lan != null) {
+            val remote = Socket()
+            try {
+                remote.connect(InetSocketAddress(lan, port), 10_000)
+                remote.tcpNoDelay = true
+            } catch (e: IOException) {
+                remote.closeQuietly()
+                out.write(reply(5)); return
+            }
+            out.write(reply(0))
+            relay(client, remote, inp)
+            return
+        }
+        if (gate != null && !gate.await(gateWaitMs)) { out.write(reply(2)); return } // 2 = not allowed by ruleset
         val remote = try {
             upstream.open(host, port)
         } catch (e: IOException) {
@@ -169,6 +199,7 @@ class LocalSocksServer(private val upstream: Upstream, val health: RelayHealth =
 
     private fun udpAssociate(client: Socket, inp: DataInputStream, out: OutputStream) {
         val ep = upstream.endpoint
+        if (gate != null && !gate.isOpen) { out.write(reply(2)); return }
         if (ep.protocol != Protocol.SOCKS5 || ep.host == "127.0.0.1") { out.write(reply(7)); return }
         val (ctrl, relayAddr) = try {
             Socks5Client.udpAssociate(ep, 10_000)
@@ -181,6 +212,11 @@ class LocalSocksServer(private val upstream: Upstream, val health: RelayHealth =
     }
 
     private fun reply(code: Int) = byteArrayOf(5, code.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)
+
+    companion object {
+        /** How long a new connection waits for a check in progress before it is refused (hev gives up after 10 s). */
+        const val GATE_WAIT_MS = 8_000L
+    }
 }
 
 /**
@@ -188,7 +224,7 @@ class LocalSocksServer(private val upstream: Upstream, val health: RelayHealth =
  * Used as the system HTTP proxy in proxy-only mode, and by the app itself for exit-IP and
  * health checks in every mode.
  */
-class LocalHttpProxy(private val upstream: Upstream) : LoopbackServer("http-proxy") {
+class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGate? = null) : LoopbackServer("http-proxy") {
 
     override fun handle(client: Socket) {
         val inp = client.getInputStream()
@@ -225,7 +261,10 @@ class LocalHttpProxy(private val upstream: Upstream) : LoopbackServer("http-prox
     }
 
     private fun openOr502(out: OutputStream, host: String, port: Int): Socket? = try {
-        upstream.open(host, port)
+        if (gate != null && !gate.await(LocalSocksServer.GATE_WAIT_MS)) {
+            respond(out, 503, "Service Unavailable", "Traffic is blocked until ResProxy finds a clean IP")
+            null
+        } else upstream.open(host, port)
     } catch (e: IOException) {
         respond(out, 502, "Bad Gateway", e.message ?: "upstream error"); null
     }

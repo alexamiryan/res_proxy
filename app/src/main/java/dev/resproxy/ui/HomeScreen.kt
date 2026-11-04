@@ -285,7 +285,7 @@ private fun LocationCard(
 @Composable
 private fun PowerButton(status: TunnelStatus, onClick: () -> Unit) {
     val target = when (status.phase) {
-        Phase.CONNECTED -> StatusColors.connected
+        Phase.CONNECTED -> if (status.trafficBlocked) StatusColors.pending else StatusColors.connected
         Phase.CONNECTING, Phase.ROTATING -> StatusColors.pending
         Phase.PROXY_DOWN, Phase.ERROR -> StatusColors.down
         Phase.DISCONNECTED -> StatusColors.idle
@@ -313,7 +313,7 @@ private fun PowerButton(status: TunnelStatus, onClick: () -> Unit) {
 private fun phaseLabel(s: TunnelStatus) = when (s.phase) {
     Phase.DISCONNECTED -> "Not connected"
     Phase.CONNECTING -> "Connecting…"
-    Phase.CONNECTED -> "Connected"
+    Phase.CONNECTED -> if (!s.trafficBlocked) "Connected" else if (s.checking) "Checking IP · traffic blocked" else "Traffic blocked"
     Phase.ROTATING -> "Getting a new IP…"
     Phase.PROXY_DOWN -> "Proxy down · traffic blocked"
     Phase.ERROR -> "Connection failed"

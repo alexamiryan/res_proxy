@@ -30,11 +30,11 @@ import dev.resproxy.net.LocalSocksServer
 import dev.resproxy.net.ProxyAuthException
 import dev.resproxy.net.ProxyProbe
 import dev.resproxy.net.RelayHealth
+import dev.resproxy.net.TrafficGate
 import dev.resproxy.net.Upstream
 import dev.resproxy.net.WireGuard
 import dev.resproxy.net.WireGuardConfig
 import dev.resproxy.provider.Presets
-import dev.resproxy.reputation.ReputationReport
 import dev.resproxy.ui.formatBytes
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
@@ -83,7 +83,10 @@ class ProxyVpnService : VpnService() {
 
     private var tun: ParcelFileDescriptor? = null
     private var upstream: Upstream? = null
+    /** Local proxy for the app's own checks: never gated. */
     private var httpProxy: LocalHttpProxy? = null
+    /** Proxy-only mode: the system HTTP proxy apps use (gated). */
+    private var systemProxy: LocalHttpProxy? = null
     private var socksBridge: LocalSocksServer? = null
     private var hevRunning = false
     private var profile: Profile? = null
@@ -93,6 +96,14 @@ class ProxyVpnService : VpnService() {
     private var checkJob: Job? = null
 
     @Volatile private var killSwitch = true
+    @Volatile private var bypassLan = true
+    /** Open only while the current exit IP passed the reputation check: apps never use an unchecked or bad IP. */
+    private val gate = TrafficGate()
+    /** Exit IP that passed the check and that the gate was opened for. */
+    @Volatile private var cleanIp: String? = null
+    /** Blocked with no clean IP found (bad IP, rotations used up): wait for "New IP" instead of re-checking. */
+    @Volatile private var waitingForUser = false
+    private var lastCheckKick = 0L
     private val relayHealth = RelayHealth()
     /** EWMA of proxy handshake round trips (ms). */
     @Volatile private var proxyRtt: Double? = null
@@ -109,7 +120,7 @@ class ProxyVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        scope.launch { container.settings.settings.collect { killSwitch = it.killSwitch } }
+        scope.launch { container.settings.settings.collect { killSwitch = it.killSwitch; bypassLan = it.bypassLan } }
         scope.launch { watchSettings() }
         scope.launch { watchApiKeys() }
     }
@@ -165,7 +176,7 @@ class ProxyVpnService : VpnService() {
             null -> ""
         }
         return Keys(
-            tun = listOf(cs.tunnelMode, cs.splitMode, cs.apps.sorted(), s.bypassLan).toString(),
+            tun = listOf(cs.tunnelMode, cs.splitMode, cs.apps.sorted(), s.bypassLan, lockdown()).toString(),
             upstream = listOf(
                 s.provider, cs.protocol, cs.sticky, cs.lifetimeMinutes, cs.gateways, acc?.username, acc?.password,
                 s.chainEnabled, s.vpnExit, vpn,
@@ -192,6 +203,7 @@ class ProxyVpnService : VpnService() {
                         lock.withLock {
                             if (profile == null) return@withLock
                             builtWith = now
+                            blockTraffic()
                             TunnelState.update { it.copy(phase = Phase.CONNECTING, exitIp = null, report = null, message = "Applying new settings…") }
                             if (reloadChain() && rebuild()) TunnelState.update { it.copy(phase = Phase.CONNECTED, message = null) }
                         }
@@ -302,6 +314,7 @@ class ProxyVpnService : VpnService() {
     private suspend fun switchSession(sessionId: String) {
         lock.withLock {
             if (profile == null) return
+            blockTraffic()
             container.settings.update { it.withSession(sessionId) }
             val p = container.connectionProfile(sessionId) ?: return
             profile = p
@@ -327,6 +340,7 @@ class ProxyVpnService : VpnService() {
     private fun restartUpstream(p: Profile): Boolean {
         stopHev()
         httpProxy?.stop(); httpProxy = null
+        systemProxy?.stop(); systemProxy = null
         socksBridge?.stop(); socksBridge = null
         upstream = null
         return try {
@@ -371,11 +385,13 @@ class ProxyVpnService : VpnService() {
 
     private fun teardown() {
         checkJob?.cancel(); checkJob = null
+        gate.close(); cleanIp = null; waitingForUser = false
         workers.forEach { it.cancel() }; workers = emptyList()
         unregisterNetworkCallback()
         stopHev()
         runCatching { tun?.close() }; tun = null
         httpProxy?.stop(); httpProxy = null
+        systemProxy?.stop(); systemProxy = null
         socksBridge?.stop(); socksBridge = null
         upstream = null
         WireGuard.stop()
@@ -426,7 +442,11 @@ class ProxyVpnService : VpnService() {
         upstream = up
         httpProxy = LocalHttpProxy(up).also { it.start() }
         // hev always goes through our relay: fresh DNS per connection and visibility into whether app traffic works.
-        if (p.tunnelMode == TunnelMode.FULL) socksBridge = LocalSocksServer(up, relayHealth).also { it.start() }
+        if (p.tunnelMode == TunnelMode.FULL) {
+            socksBridge = LocalSocksServer(up, relayHealth, gate, lanDirect = { bypassLan }).also { it.start() }
+        } else {
+            systemProxy = LocalHttpProxy(up, gate).also { it.start() }
+        }
     }
 
     private fun recordRtt(ms: Long) {
@@ -458,17 +478,38 @@ class ProxyVpnService : VpnService() {
             .setConfigureIntent(
                 PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
             )
-        val lan = bypassLan && p.tunnelMode == TunnelMode.FULL
+        // With "Block connections without VPN" Android drops everything routed outside the VPN, LAN included.
+        // Then the LAN stays in the TUN and the relay connects LAN targets directly instead.
+        val lan = bypassLan && p.tunnelMode == TunnelMode.FULL && !lockdown()
         Routes.v4(lan).forEach { b.addRoute(it.address, it.prefix) }
         Routes.v6(lan).forEach { b.addRoute(it.address, it.prefix) }
         if (p.tunnelMode == TunnelMode.FULL) {
             b.addDnsServer(HevConfig.MAPDNS)
         } else if (Build.VERSION.SDK_INT >= 29) {
             // Proxy-only: proxy-aware apps use the local proxy; everything else hits an unread TUN (blocked).
-            b.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", httpProxy!!.port))
+            b.setHttpProxy(ProxyInfo.buildDirectProxy("127.0.0.1", systemProxy!!.port))
         }
         applySplit(b, p)
         return b.establish()
+    }
+
+    private fun lockdown() = Build.VERSION.SDK_INT >= 29 && isLockdownEnabled
+
+    /** Closes the gate and drops apps' open connections: the exit IP is new or not (yet) known to be clean. */
+    private fun blockTraffic() {
+        gate.close()
+        cleanIp = null
+        waitingForUser = false
+        socksBridge?.closeConnections()
+        systemProxy?.closeConnections()
+        TunnelState.update { it.copy(trafficBlocked = true) }
+    }
+
+    private fun allowTraffic(ip: String?) {
+        cleanIp = ip
+        waitingForUser = false
+        gate.open()
+        TunnelState.update { it.copy(trafficBlocked = false) }
     }
 
     private fun applySplit(b: Builder, p: Profile) {
@@ -599,7 +640,7 @@ class ProxyVpnService : VpnService() {
     private fun counters(): Pair<Long, Long> {
         val p = profile ?: return hevLast
         if (p.tunnelMode == TunnelMode.PROXY_ONLY) {
-            val h = httpProxy ?: return hevLast
+            val h = systemProxy ?: return hevLast
             return h.bytesDown.get() to h.bytesUp.get()
         }
         if (!hevRunning) return hevLast
@@ -642,6 +683,7 @@ class ProxyVpnService : VpnService() {
                 if (failingSince == 0L) failingSince = now
                 failsInStreak += newFail
             }
+            if (!gate.isOpen) { failingSince = 0; failsInStreak = 0 }
             if (failingSince != 0L && now - failingSince > 20_000 && failsInStreak >= 3 &&
                 relayHealth.distinctFailedHosts(failingSince) >= 2
             ) {
@@ -652,7 +694,7 @@ class ProxyVpnService : VpnService() {
             // 2. Tunnel engine stuck: apps keep sending, but no connection reaches the relay.
             if (profile?.tunnelMode == TunnelMode.FULL && hevRunning) {
                 val appUp = hevLast.second
-                if (newOk + newFail > 0) quietSince = 0
+                if (newOk + newFail > 0 || !gate.isOpen) quietSince = 0
                 else if (quietSince == 0L) { quietSince = now; appUpAtQuiet = appUp }
                 else if (now - quietSince > 30_000 && appUp - appUpAtQuiet > 20_000) { suspect = "tunnel engine stalled"; quietSince = 0 }
             }
@@ -670,6 +712,13 @@ class ProxyVpnService : VpnService() {
                 }
             }
             proxyRtt?.let { r -> TunnelState.update { it.copy(proxyPingMs = r.toLong()) } }
+
+            // Blocked and no check running (it failed, or the proxy dropped mid-check): check again.
+            if (!gate.isOpen && !waitingForUser && checkJob?.isActive != true && upstream != null &&
+                TunnelState.status.value.phase == Phase.CONNECTED && now - lastCheckKick > 30_000
+            ) {
+                launchCheck(force = false)
+            }
 
             val backoff = minOf(5_000L * (fails + 1), interval)
             val up = upstream
@@ -691,7 +740,7 @@ class ProxyVpnService : VpnService() {
                 }
                 if (TunnelState.status.value.phase == Phase.PROXY_DOWN) {
                     TunnelState.update { it.copy(phase = Phase.CONNECTED, message = "Proxy reachable again") }
-                    if (TunnelState.status.value.exitIp == null) launchCheck(force = false)
+                    if ((TunnelState.status.value.exitIp == null || !gate.isOpen) && checkJob?.isActive != true) launchCheck(force = false)
                 }
                 TunnelState.update { it.copy(latencyMs = result.getOrNull()) }
                 if (suspect != null) {
@@ -710,14 +759,14 @@ class ProxyVpnService : VpnService() {
     }
 
     /**
-     * Verifies the proxy works, then exit IP + reputation. With auto-rotate on, keeps switching
-     * sticky sessions until the verdict is below the threshold (or keeps the best one found).
+     * Verifies the proxy works, then exit IP + reputation. Apps' traffic stays blocked until an IP passes
+     * (verdict below the rotate threshold). With auto-rotate on, keeps switching sticky sessions until one does.
      */
     private fun launchCheck(force: Boolean) {
         checkJob?.cancel()
+        lastCheckKick = System.currentTimeMillis()
         checkJob = scope.launch {
             var attempt = 0
-            var best: Pair<String, ReputationReport>? = null
             while (isActive) {
                 val up = upstream ?: return@launch
                 val port = httpProxy?.port ?: return@launch
@@ -734,34 +783,45 @@ class ProxyVpnService : VpnService() {
                 }
                 val s = container.settings.current()
                 if (!s.recheckOnConnect && !force) {
+                    // Checks are turned off: nothing to wait for.
+                    allowTraffic(null)
                     TunnelState.update { it.copy(checking = false) }
                     return@launch
                 }
                 val report = try {
                     val exit = container.reputation.exitIp(port)
+                    if (exit.ip != cleanIp) blockTraffic() // new IP, or it changed under us (provider ended the session)
                     TunnelState.update { it.copy(exitIp = exit.ip) }
                     container.reputation.check(exit.ip, force, fallbackProxyPort = port)
                 } catch (e: Exception) {
-                    TunnelState.update { it.copy(checking = false, message = e.message) }
+                    // The health loop tries again.
+                    TunnelState.update { it.copy(checking = false, message = "Couldn't check the IP (${e.message}) — traffic blocked, retrying") }
                     return@launch
                 }
                 TunnelState.update { it.copy(report = report, checking = false) }
+                if (report.verdict == Verdict.UNKNOWN) {
+                    TunnelState.update { it.copy(message = "No reputation source answered — traffic blocked, retrying") }
+                    return@launch
+                }
 
                 val p = profile ?: return@launch
-                val acceptable = report.verdict.severity < s.rotateThreshold.severity
-                if (!s.autoRotate || !p.sticky || acceptable) {
+                if (report.verdict.severity < s.rotateThreshold.severity) {
+                    allowTraffic(report.ip)
+                    TunnelState.update { it.copy(message = null) }
                     if (attempt > 0) notifyRotation("Found ${verdictWord(report.verdict)} IP ${report.ip} after $attempt rotation(s)")
                     break
                 }
-                if (best == null || report.verdict.severity < best.second.verdict.severity) best = p.sessionId to report
+                blockTraffic()
+                if (!s.autoRotate || !p.sticky) {
+                    waitingForUser = true
+                    TunnelState.update { it.copy(message = "IP is ${verdictWord(report.verdict)} — traffic blocked. Tap New IP.") }
+                    break
+                }
                 val max = s.maxRotations.coerceIn(1, 50)
                 if (attempt >= max) {
-                    val (sid, rep) = best!!
-                    if (sid != p.sessionId) switchSession(sid)
-                    TunnelState.update {
-                        it.copy(report = rep, exitIp = rep.ip, message = "No clean IP after $attempt tries; kept the best one")
-                    }
-                    notifyRotation("No clean IP after $attempt rotations — kept ${rep.ip} (${verdictWord(rep.verdict)})")
+                    waitingForUser = true
+                    TunnelState.update { it.copy(message = "No clean IP after $attempt tries — traffic blocked. Tap New IP to keep trying.") }
+                    notifyRotation("No clean IP after $attempt rotations — traffic blocked. Tap New IP to keep trying.")
                     break
                 }
                 attempt++
@@ -784,7 +844,7 @@ class ProxyVpnService : VpnService() {
     private fun buildNotification(): Notification {
         val s = TunnelState.status.value
         val title = when (s.phase) {
-            Phase.CONNECTED -> "Connected · ${s.profileName ?: ""}"
+            Phase.CONNECTED -> if (s.trafficBlocked) "Traffic blocked until a clean IP is found" else "Connected · ${s.profileName ?: ""}"
             Phase.CONNECTING -> "Connecting…"
             Phase.ROTATING -> "Getting a new IP…"
             Phase.PROXY_DOWN -> "Proxy unreachable — traffic blocked"

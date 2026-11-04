@@ -36,15 +36,21 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
    the new one is established.
 2. **Background jobs never crash the process.** The service scope has a `CoroutineExceptionHandler` that
    logs and reconnects; an uncaught exception would drop the VPN with nothing left to restore it.
-3. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
+3. **Apps only get internet through a checked IP.** `TrafficGate` (`net/TrafficGate.kt`) stays closed from
+   connect, each new session and settings rebuilds until the exit IP's verdict is below the rotate threshold.
+   While closed, the relay (and in proxy-only mode the system proxy) holds new connections for up to 8 s,
+   then refuses them, and drops open ones when an IP turns out bad. The app's own checks use a separate,
+   ungated `httpProxy`. Rotations used up, or a bad IP with auto-rotate off, leave traffic blocked until
+   "New IP". Failed or UNKNOWN checks are retried by the health loop. Turning checks off opens the gate.
+4. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
    retrying. Off: failures disconnect.
-4. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
+5. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
    That would show the real IP to the proxy.
-5. Mullvad device keys are **per install**: `MullvadAccount.device` is never put in a backup. Only the account
+6. Mullvad device keys are **per install**: `MullvadAccount.device` is never put in a backup. Only the account
    number travels.
-6. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
+7. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
    (`data/SecretStore.kt`). Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
-7. Never show the proxy password, the API keys or the backup passphrase in UI or logs.
+8. Never show the proxy password, the API keys or the backup passphrase in UI or logs.
 
 ## Layout
 
@@ -119,6 +125,11 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
   session too.
 - Geonode's location API (`monitor.geonode.com/.../targeting-options`) takes Basic auth with the dashboard
   login or, if none is set, the base proxy username + password (`ProviderLocations.geonodeAuth`).
+- LAN bypass: normally the LAN ranges are left out of the TUN routes. With Always-on + "Block connections
+  without VPN" (`isLockdownEnabled`) Android drops anything routed outside the VPN, LAN included, so then the LAN
+  stays in the TUN and the relay connects private IPs directly (`LanTargets`). In both modes, local names
+  (single label, `.local`, `.lan`, `.internal`, …) arrive as hostnames via fake-IP DNS; the relay resolves only
+  those with the network's DNS and goes direct if they're private. Public names are never resolved locally.
 - A city can be targeted without a state (both providers); with "Any state" the picker lists every city in
   the country.
 - `LoopbackServer.stop` iterates the concurrent socket set directly: Kotlin `toList()` on it threw
