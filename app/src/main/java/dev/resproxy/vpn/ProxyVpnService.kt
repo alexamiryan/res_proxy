@@ -45,6 +45,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.distinctUntilChanged
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -97,6 +99,7 @@ class ProxyVpnService : VpnService() {
         super.onCreate()
         scope.launch { container.settings.settings.collect { killSwitch = it.killSwitch } }
         scope.launch { watchSettings() }
+        scope.launch { watchApiKeys() }
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -179,6 +182,19 @@ class ProxyVpnService : VpnService() {
                     }
                 }
             }
+    }
+
+    /** New or removed API keys change which sources a report has: re-check the current IP right away. */
+    @OptIn(FlowPreview::class)
+    private suspend fun watchApiKeys() {
+        container.settings.apiKeys.distinctUntilChanged().drop(1).debounce(1000).collect {
+            container.reputation.clearCache()
+            val st = TunnelState.status.value
+            if (st.phase == Phase.CONNECTED && !st.checking) {
+                Log.i(TAG, "API keys changed, re-checking reputation")
+                launchCheck(force = true)
+            }
+        }
     }
 
     private suspend fun connect() {

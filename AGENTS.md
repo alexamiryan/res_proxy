@@ -105,6 +105,8 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
   relay failures. Auto-repair needs failures across ≥2 distinct hosts with no successes for 20 s.
 - Network changes: `registerDefaultNetworkCallback` didn't fire usefully for the excluded VPN app; use a
   `NOT_VPN` + `INTERNET` `NetworkRequest` and treat "new network after a loss" as a switch.
+- Reputation reports are cached per IP for 1 h, and a sticky session keeps the same IP. When API keys change
+  (saved as you type), the service clears the cache and re-checks, otherwise new sources never show up.
 - Compose settings text fields keep local state (`TextSetting` / `NumberField`), because DataStore writes are
   async and binding straight to them drops typed characters.
 - Backup import must run in `appScope` and write accounts last: saving accounts swaps the first-run UI out

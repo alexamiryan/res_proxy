@@ -62,6 +62,7 @@ import dev.resproxy.data.SplitMode
 import dev.resproxy.data.TunnelMode
 import dev.resproxy.data.Verdict
 import dev.resproxy.provider.Presets
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class SettingsPage(val title: String) {
@@ -206,8 +207,13 @@ private fun ReputationSettings(s: AppSettings, update: ((AppSettings) -> AppSett
     val c = LocalContext.current.container
     val scope = rememberCoroutineScope()
     var keys by remember { mutableStateOf<ApiKeys?>(null) }
-    var saved by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) { keys = c.settings.currentKeys() }
+    // Save as you type (debounced); the running tunnel re-checks the IP when keys change.
+    LaunchedEffect(keys) {
+        val k = keys ?: return@LaunchedEffect
+        delay(800)
+        if (k != c.settings.currentKeys()) c.settings.setKeys(k)
+    }
 
     SettingsGroup {
         SwitchRow("Check on connect", "Look up the exit IP every time you connect or change IP", s.recheckOnConnect) { v ->
@@ -231,7 +237,7 @@ private fun ReputationSettings(s: AppSettings, update: ((AppSettings) -> AppSett
     SettingsGroup("API keys") {
         Hint("ipapi.is, proxycheck.io, ip-api.com and DNS blacklists work without keys. Keys raise limits and add AbuseIPDB, IPQualityScore and Scamalytics.")
         keys?.let { k ->
-            fun edit(f: (ApiKeys) -> ApiKeys) { keys = f(k); saved = false }
+            fun edit(f: (ApiKeys) -> ApiKeys) { keys = f(k) }
             Column(Modifier.padding(horizontal = 16.dp, vertical = 8.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                 KeyField("AbuseIPDB", k.abuseIpDb) { v -> edit { it.copy(abuseIpDb = v) } }
                 KeyField("IPQualityScore", k.ipqs) { v -> edit { it.copy(ipqs = v) } }
@@ -240,9 +246,8 @@ private fun ReputationSettings(s: AppSettings, update: ((AppSettings) -> AppSett
                 OutlinedTextField(k.scamalyticsUser, { v -> edit { it.copy(scamalyticsUser = v.trim()) } },
                     label = { Text("Scamalytics username") }, singleLine = true, modifier = Modifier.fillMaxWidth())
                 KeyField("Scamalytics key", k.scamalyticsKey) { v -> edit { it.copy(scamalyticsKey = v) } }
-                Button(onClick = { scope.launch { c.settings.setKeys(k); saved = true } }, modifier = Modifier.fillMaxWidth()) {
-                    Text(if (saved) "Saved" else "Save keys")
-                }
+                Text("Saved automatically. While connected, the IP is re-checked with the new keys.",
+                    style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.onSurfaceVariant)
             }
         }
     }

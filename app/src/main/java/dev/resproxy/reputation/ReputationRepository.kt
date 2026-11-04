@@ -78,6 +78,9 @@ class ReputationRepository(private val settings: SettingsRepository) {
         }.getOrNull()
     }
 
+    /** API keys changed: old reports miss (or wrongly include) sources. */
+    fun clearCache() = cache.clear()
+
     fun cached(ip: String): ReputationReport? = cache[ip]?.takeIf { System.currentTimeMillis() - it.checkedAt < CACHE_MS }
 
     suspend fun check(ip: String, force: Boolean = false, fallbackProxyPort: Int? = null): ReputationReport {
