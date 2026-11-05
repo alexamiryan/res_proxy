@@ -53,6 +53,12 @@ class SharedVectorsTest {
         assertEquals(payload, BackupCrypto.open(f.readText(), passphrase.toCharArray()))
     }
 
+    @Test fun opensBackupMadeByIos() {
+        val f = File(dir, "backup-ios.txt")
+        assumeTrue("run the iOS tests first (cd ios/ResProxyCore && swift test)", f.exists())
+        assertEquals(payload, BackupCrypto.open(f.readText(), passphrase.toCharArray()))
+    }
+
     @Test fun writeAndroidVector() {
         assumeTrue(System.getenv("WRITE_VECTORS") == "1")
         File(dir, "backup-android.txt").writeText(BackupCrypto.seal(payload, passphrase.toCharArray()) + "\n")

@@ -1,0 +1,673 @@
+// !$*UTF8*$!
+{
+	archiveVersion = 1;
+	classes = {
+	};
+	objectVersion = 60;
+	objects = {
+
+/* Begin PBXBuildFile section */
+		11D0E5870BBAB20F9AB95AD2 = {
+			fileRef = 5A70D551DC81FEC320A7A1E2;
+			isa = PBXBuildFile;
+		};
+		2A73F8EF46C068126D3E65C7 = {
+			fileRef = 3F520B4A11CAF6388E0D40FB;
+			isa = PBXBuildFile;
+		};
+		2E53664BC39C72E1FF01405F = {
+			fileRef = A063CD06C4FB6535D3B75300;
+			isa = PBXBuildFile;
+		};
+		4DEFED5619B12C52E9AA56EF = {
+			isa = PBXBuildFile;
+			productRef = 37F0F49837F993FA942C16CC;
+		};
+		5A13D15CCB1EDCEE81CD571F = {
+			fileRef = 75FA653A16BAB9D8F50A6557;
+			isa = PBXBuildFile;
+		};
+		6890684FF40735FDF00F3565 = {
+			fileRef = B073563171B998BA947A7961;
+			isa = PBXBuildFile;
+		};
+		73CAD955974A7238F6CEC416 = {
+			fileRef = 584610EBB01BDF84214CAD02;
+			isa = PBXBuildFile;
+		};
+		7E0A09577CBE0D739CFDA9AF = {
+			isa = PBXBuildFile;
+			productRef = E5307FEB536449D701707E0C;
+		};
+		88095602C2240CC3ACCEBF51 = {
+			fileRef = 83FAA530ABD887833F9A672B;
+			isa = PBXBuildFile;
+		};
+		94184DEB3498B7B7E3F65012 = {
+			fileRef = D016A031FF82BB461CC84A8E;
+			isa = PBXBuildFile;
+		};
+		9B4F114DB6C9D4A367A25FF1 = {
+			fileRef = C846A9D32869F590D9009ABE;
+			isa = PBXBuildFile;
+			settings = {
+				ATTRIBUTES = (
+					RemoveHeadersOnCopy,
+				);
+			};
+		};
+		A3179936EEC67A579B6D21BD = {
+			fileRef = 8C93B0B511C8BD02028D80E1;
+			isa = PBXBuildFile;
+		};
+		B89DB3F9E4E931E7F02EB748 = {
+			fileRef = 593ED273B6BB744AFA2854A1;
+			isa = PBXBuildFile;
+		};
+		C70B15528EE3E85CA2586626 = {
+			fileRef = 9C84601E1E3BF78F5A0ECEEF;
+			isa = PBXBuildFile;
+		};
+		D0CC8007CF8EDC0E726B67A0 = {
+			fileRef = D016A031FF82BB461CC84A8E;
+			isa = PBXBuildFile;
+		};
+		D2AAE5750282EFB4D802BBDD = {
+			fileRef = 856A3C73F393C16FD8117E96;
+			isa = PBXBuildFile;
+		};
+		E27488E963973339162DB4F4 = {
+			fileRef = 661A418C6D98E5630556018B;
+			isa = PBXBuildFile;
+		};
+		E33E06865C1B7BC40FD73F74 = {
+			fileRef = 06B3E45270337FAF2A0D2A4E;
+			isa = PBXBuildFile;
+		};
+		ED19DF3BF270F88005BB6B27 = {
+			fileRef = BC0AC64D99691E795E161624;
+			isa = PBXBuildFile;
+		};
+/* End PBXBuildFile section */
+
+/* Begin PBXContainerItemProxy section */
+		6DE1494D6B9BC63E3D72F64D = {
+			containerPortal = 46F86FAA6BBF9AC94A7E4595;
+			isa = PBXContainerItemProxy;
+			proxyType = 1;
+			remoteGlobalIDString = 5DC61D677659CB93EE502EBC;
+			remoteInfo = ResProxyTunnel;
+		};
+/* End PBXContainerItemProxy section */
+
+/* Begin PBXCopyFilesBuildPhase section */
+		3769550BEC446D779F5C3557 = {
+			buildActionMask = 2147483647;
+			dstPath = "";
+			dstSubfolderSpec = 13;
+			files = (
+				9B4F114DB6C9D4A367A25FF1,
+			);
+			isa = PBXCopyFilesBuildPhase;
+			name = "Embed App Extensions";
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXCopyFilesBuildPhase section */
+
+/* Begin PBXFileReference section */
+		06B3E45270337FAF2A0D2A4E = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = VpnSettingsView.swift;
+			sourceTree = "<group>";
+		};
+		1349E9232C11C8CA299A52C2 = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.xml;
+			path = Info.plist;
+			sourceTree = "<group>";
+		};
+		2F13887C898746538E4DAF8B = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.xml;
+			path = Info.plist;
+			sourceTree = "<group>";
+		};
+		3F520B4A11CAF6388E0D40FB = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = HomeView.swift;
+			sourceTree = "<group>";
+		};
+		584610EBB01BDF84214CAD02 = {
+			isa = PBXFileReference;
+			lastKnownFileType = folder.assetcatalog;
+			path = Assets.xcassets;
+			sourceTree = "<group>";
+		};
+		593ED273B6BB744AFA2854A1 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Pinger.swift;
+			sourceTree = "<group>";
+		};
+		5A70D551DC81FEC320A7A1E2 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.c.c;
+			path = TunFd.c;
+			sourceTree = "<group>";
+		};
+		5FE13E4C12F93A2F2D321C37 = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.entitlements;
+			path = ResProxy.entitlements;
+			sourceTree = "<group>";
+		};
+		661A418C6D98E5630556018B = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Theme.swift;
+			sourceTree = "<group>";
+		};
+		70DDCE45C5A98891EF26D363 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.c.h;
+			path = Tunnel-Bridging-Header.h;
+			sourceTree = "<group>";
+		};
+		75FA653A16BAB9D8F50A6557 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = SettingsView.swift;
+			sourceTree = "<group>";
+		};
+		83FAA530ABD887833F9A672B = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = ResProxyApp.swift;
+			sourceTree = "<group>";
+		};
+		856A3C73F393C16FD8117E96 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = BackupView.swift;
+			sourceTree = "<group>";
+		};
+		8C93B0B511C8BD02028D80E1 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = TunnelController.swift;
+			sourceTree = "<group>";
+		};
+		9C84601E1E3BF78F5A0ECEEF = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = AppModel.swift;
+			sourceTree = "<group>";
+		};
+		A063CD06C4FB6535D3B75300 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Pickers.swift;
+			sourceTree = "<group>";
+		};
+		B073563171B998BA947A7961 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = Native.swift;
+			sourceTree = "<group>";
+		};
+		BC0AC64D99691E795E161624 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.swift;
+			path = PacketTunnelProvider.swift;
+			sourceTree = "<group>";
+		};
+		C62C7574F678A9108B2EFACE = {
+			isa = PBXFileReference;
+			lastKnownFileType = text.plist.entitlements;
+			path = ResProxyTunnel.entitlements;
+			sourceTree = "<group>";
+		};
+		C846A9D32869F590D9009ABE = {
+			explicitFileType = wrapper.app-extension;
+			includeInIndex = 0;
+			isa = PBXFileReference;
+			path = ResProxyTunnel.appex;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+		D016A031FF82BB461CC84A8E = {
+			isa = PBXFileReference;
+			lastKnownFileType = wrapper.framework;
+			name = NetworkExtension.framework;
+			path = System/Library/Frameworks/NetworkExtension.framework;
+			sourceTree = SDKROOT;
+		};
+		D4B34727B4714B78107C2537 = {
+			isa = PBXFileReference;
+			lastKnownFileType = sourcecode.c.h;
+			path = TunFd.h;
+			sourceTree = "<group>";
+		};
+		F2BACD3362A8C226E2BACF4E = {
+			isa = PBXFileReference;
+			lastKnownFileType = wrapper;
+			path = ResProxyCore;
+			sourceTree = "<group>";
+		};
+		F91288DB192297DC903FE08C = {
+			explicitFileType = wrapper.application;
+			includeInIndex = 0;
+			isa = PBXFileReference;
+			path = ResProxy.app;
+			sourceTree = BUILT_PRODUCTS_DIR;
+		};
+/* End PBXFileReference section */
+
+/* Begin PBXFrameworksBuildPhase section */
+		184A3D3AC0D7ED7B182F4110 = {
+			buildActionMask = 2147483647;
+			files = (
+				7E0A09577CBE0D739CFDA9AF,
+				D0CC8007CF8EDC0E726B67A0,
+			);
+			isa = PBXFrameworksBuildPhase;
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		4163712B02ACFC02BA9BD642 = {
+			buildActionMask = 2147483647;
+			files = (
+				4DEFED5619B12C52E9AA56EF,
+				94184DEB3498B7B7E3F65012,
+			);
+			isa = PBXFrameworksBuildPhase;
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXFrameworksBuildPhase section */
+
+/* Begin PBXGroup section */
+		267AEBE1BACFD8AB573455B5 = {
+			children = (
+				9C84601E1E3BF78F5A0ECEEF,
+				584610EBB01BDF84214CAD02,
+				856A3C73F393C16FD8117E96,
+				3F520B4A11CAF6388E0D40FB,
+				1349E9232C11C8CA299A52C2,
+				A063CD06C4FB6535D3B75300,
+				593ED273B6BB744AFA2854A1,
+				5FE13E4C12F93A2F2D321C37,
+				83FAA530ABD887833F9A672B,
+				75FA653A16BAB9D8F50A6557,
+				661A418C6D98E5630556018B,
+				06B3E45270337FAF2A0D2A4E,
+			);
+			isa = PBXGroup;
+			path = App;
+			sourceTree = "<group>";
+		};
+		2AC8BA37DAC32D5437812408 = {
+			children = (
+				F91288DB192297DC903FE08C,
+				C846A9D32869F590D9009ABE,
+			);
+			isa = PBXGroup;
+			name = Products;
+			sourceTree = "<group>";
+		};
+		4EAE695AD1F489F78EA3E1C6 = {
+			children = (
+				F2BACD3362A8C226E2BACF4E,
+				267AEBE1BACFD8AB573455B5,
+				694059E2A2BF0BBBFBF799AB,
+				5A559843A90E30B141C300FB,
+				2AC8BA37DAC32D5437812408,
+			);
+			isa = PBXGroup;
+			sourceTree = "<group>";
+		};
+		5A559843A90E30B141C300FB = {
+			children = (
+				D016A031FF82BB461CC84A8E,
+			);
+			isa = PBXGroup;
+			name = Frameworks;
+			sourceTree = "<group>";
+		};
+		694059E2A2BF0BBBFBF799AB = {
+			children = (
+				2F13887C898746538E4DAF8B,
+				B073563171B998BA947A7961,
+				BC0AC64D99691E795E161624,
+				C62C7574F678A9108B2EFACE,
+				5A70D551DC81FEC320A7A1E2,
+				D4B34727B4714B78107C2537,
+				70DDCE45C5A98891EF26D363,
+				8C93B0B511C8BD02028D80E1,
+			);
+			isa = PBXGroup;
+			path = Tunnel;
+			sourceTree = "<group>";
+		};
+/* End PBXGroup section */
+
+/* Begin PBXNativeTarget section */
+		5DC61D677659CB93EE502EBC = {
+			buildConfigurationList = F196B339A726FAF5BDE22DD5;
+			buildPhases = (
+				184D009E6F97A25E287A8C2C,
+				4685E8B8D0D77E7DE5A8F53B,
+				4163712B02ACFC02BA9BD642,
+			);
+			buildRules = (
+			);
+			dependencies = (
+			);
+			isa = PBXNativeTarget;
+			name = ResProxyTunnel;
+			packageProductDependencies = (
+				37F0F49837F993FA942C16CC,
+			);
+			productName = ResProxyTunnel;
+			productReference = C846A9D32869F590D9009ABE;
+			productType = com.apple.product-type.app-extension;
+		};
+		ACC9652797AB670E77D9DAEA = {
+			buildConfigurationList = 1ED00BBC0099E0D70106FB20;
+			buildPhases = (
+				E619FD91F7807FBFE25AE60E,
+				184A3D3AC0D7ED7B182F4110,
+				22EF4D5156DF8BFEACA23EFA,
+				3769550BEC446D779F5C3557,
+			);
+			buildRules = (
+			);
+			dependencies = (
+				FAEDFC77E30439AB033F06E1,
+			);
+			isa = PBXNativeTarget;
+			name = ResProxy;
+			packageProductDependencies = (
+				E5307FEB536449D701707E0C,
+			);
+			productName = ResProxy;
+			productReference = F91288DB192297DC903FE08C;
+			productType = com.apple.product-type.application;
+		};
+/* End PBXNativeTarget section */
+
+/* Begin PBXProject section */
+		46F86FAA6BBF9AC94A7E4595 = {
+			attributes = {
+				BuildIndependentTargetsInParallel = 1;
+				LastSwiftUpdateCheck = 1600;
+				LastUpgradeCheck = 1600;
+				TargetAttributes = {
+					5DC61D677659CB93EE502EBC = {
+						CreatedOnToolsVersion = 16.0;
+					};
+					ACC9652797AB670E77D9DAEA = {
+						CreatedOnToolsVersion = 16.0;
+					};
+				};
+			};
+			buildConfigurationList = B61A476A5531CC175278BDCF;
+			compatibilityVersion = "Xcode 14.0";
+			developmentRegion = en;
+			hasScannedForEncodings = 0;
+			isa = PBXProject;
+			knownRegions = (
+				en,
+				Base,
+			);
+			mainGroup = 4EAE695AD1F489F78EA3E1C6;
+			packageReferences = (
+				00399ED3B3FA2FCA129B1CCE,
+			);
+			productRefGroup = 2AC8BA37DAC32D5437812408;
+			projectDirPath = "";
+			projectRoot = "";
+			targets = (
+				ACC9652797AB670E77D9DAEA,
+				5DC61D677659CB93EE502EBC,
+			);
+		};
+/* End PBXProject section */
+
+/* Begin PBXResourcesBuildPhase section */
+		22EF4D5156DF8BFEACA23EFA = {
+			buildActionMask = 2147483647;
+			files = (
+				73CAD955974A7238F6CEC416,
+			);
+			isa = PBXResourcesBuildPhase;
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXResourcesBuildPhase section */
+
+/* Begin PBXShellScriptBuildPhase section */
+		184D009E6F97A25E287A8C2C = {
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+			);
+			isa = PBXShellScriptBuildPhase;
+			name = "Build native libs (hev + Go bridge)";
+			outputPaths = (
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/bash;
+			shellScript = "\"$SRCROOT/scripts/build-native.sh\" \"$PLATFORM_NAME\"
+";
+		};
+/* End PBXShellScriptBuildPhase section */
+
+/* Begin PBXSourcesBuildPhase section */
+		4685E8B8D0D77E7DE5A8F53B = {
+			buildActionMask = 2147483647;
+			files = (
+				6890684FF40735FDF00F3565,
+				ED19DF3BF270F88005BB6B27,
+				11D0E5870BBAB20F9AB95AD2,
+				A3179936EEC67A579B6D21BD,
+			);
+			isa = PBXSourcesBuildPhase;
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+		E619FD91F7807FBFE25AE60E = {
+			buildActionMask = 2147483647;
+			files = (
+				C70B15528EE3E85CA2586626,
+				D2AAE5750282EFB4D802BBDD,
+				2A73F8EF46C068126D3E65C7,
+				2E53664BC39C72E1FF01405F,
+				B89DB3F9E4E931E7F02EB748,
+				88095602C2240CC3ACCEBF51,
+				5A13D15CCB1EDCEE81CD571F,
+				E27488E963973339162DB4F4,
+				E33E06865C1B7BC40FD73F74,
+			);
+			isa = PBXSourcesBuildPhase;
+			runOnlyForDeploymentPostprocessing = 0;
+		};
+/* End PBXSourcesBuildPhase section */
+
+/* Begin PBXTargetDependency section */
+		FAEDFC77E30439AB033F06E1 = {
+			isa = PBXTargetDependency;
+			target = 5DC61D677659CB93EE502EBC;
+			targetProxy = 6DE1494D6B9BC63E3D72F64D;
+		};
+/* End PBXTargetDependency section */
+
+/* Begin XCBuildConfiguration section */
+		08723DE70035A45CE7E33CC1 = {
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20;
+				DEBUG_INFORMATION_FORMAT = dwarf-with-dsym;
+				DEVELOPMENT_TEAM = DK366LFCDT;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.1.20;
+				SDKROOT = iphoneos;
+				SWIFT_COMPILATION_MODE = wholemodule;
+				SWIFT_OPTIMIZATION_LEVEL = -O;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			isa = XCBuildConfiguration;
+			name = Release;
+		};
+		31F573C1C1732BCE6B7B4EEB = {
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/ResProxy.entitlements;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.resproxy;
+				PRODUCT_NAME = ResProxy;
+				RP_APP_GROUP = group.dev.resproxy;
+			};
+			isa = XCBuildConfiguration;
+			name = Release;
+		};
+		61A8FE553262CD7EB776D383 = {
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Tunnel/ResProxyTunnel.entitlements;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_BITCODE = NO;
+				HEADER_SEARCH_PATHS = "$(inherited) $(SRCROOT)/build/native/include $(SRCROOT)/Tunnel";
+				INFOPLIST_FILE = Tunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(SRCROOT)/build/native/iphoneos";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(SRCROOT)/build/native/iphonesimulator";
+				OTHER_LDFLAGS = "$(inherited) -lhev -lresproxy -lresolv";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.resproxy.tunnel;
+				PRODUCT_NAME = ResProxyTunnel;
+				RP_APP_GROUP = group.dev.resproxy;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = Tunnel/Tunnel-Bridging-Header.h;
+			};
+			isa = XCBuildConfiguration;
+			name = Debug;
+		};
+		7C80754A03446383EF99BF62 = {
+			buildSettings = {
+				APPLICATION_EXTENSION_API_ONLY = YES;
+				CODE_SIGN_ENTITLEMENTS = Tunnel/ResProxyTunnel.entitlements;
+				DEAD_CODE_STRIPPING = YES;
+				ENABLE_BITCODE = NO;
+				HEADER_SEARCH_PATHS = "$(inherited) $(SRCROOT)/build/native/include $(SRCROOT)/Tunnel";
+				INFOPLIST_FILE = Tunnel/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks @executable_path/../../Frameworks";
+				"LIBRARY_SEARCH_PATHS[sdk=iphoneos*]" = "$(inherited) $(SRCROOT)/build/native/iphoneos";
+				"LIBRARY_SEARCH_PATHS[sdk=iphonesimulator*]" = "$(inherited) $(SRCROOT)/build/native/iphonesimulator";
+				OTHER_LDFLAGS = "$(inherited) -lhev -lresproxy -lresolv";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.resproxy.tunnel;
+				PRODUCT_NAME = ResProxyTunnel;
+				RP_APP_GROUP = group.dev.resproxy;
+				SKIP_INSTALL = YES;
+				SWIFT_OBJC_BRIDGING_HEADER = Tunnel/Tunnel-Bridging-Header.h;
+			};
+			isa = XCBuildConfiguration;
+			name = Release;
+		};
+		80DB6ACE13380ADC3D86D6C5 = {
+			buildSettings = {
+				ALWAYS_SEARCH_USER_PATHS = NO;
+				CLANG_ENABLE_MODULES = YES;
+				CLANG_ENABLE_OBJC_ARC = YES;
+				CODE_SIGN_STYLE = Automatic;
+				CURRENT_PROJECT_VERSION = 20;
+				DEBUG_INFORMATION_FORMAT = dwarf;
+				DEVELOPMENT_TEAM = DK366LFCDT;
+				ENABLE_USER_SCRIPT_SANDBOXING = NO;
+				GCC_C_LANGUAGE_STANDARD = gnu11;
+				IPHONEOS_DEPLOYMENT_TARGET = 16.0;
+				MARKETING_VERSION = 0.1.20;
+				ONLY_ACTIVE_ARCH = YES;
+				SDKROOT = iphoneos;
+				SWIFT_ACTIVE_COMPILATION_CONDITIONS = DEBUG;
+				SWIFT_OPTIMIZATION_LEVEL = -Onone;
+				SWIFT_VERSION = 5.0;
+				TARGETED_DEVICE_FAMILY = "1,2";
+			};
+			isa = XCBuildConfiguration;
+			name = Debug;
+		};
+		98E398162C206F89866DBAA5 = {
+			buildSettings = {
+				ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon;
+				ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME = AccentColor;
+				CODE_SIGN_ENTITLEMENTS = App/ResProxy.entitlements;
+				INFOPLIST_FILE = App/Info.plist;
+				LD_RUNPATH_SEARCH_PATHS = "$(inherited) @executable_path/Frameworks";
+				PRODUCT_BUNDLE_IDENTIFIER = dev.resproxy;
+				PRODUCT_NAME = ResProxy;
+				RP_APP_GROUP = group.dev.resproxy;
+			};
+			isa = XCBuildConfiguration;
+			name = Debug;
+		};
+/* End XCBuildConfiguration section */
+
+/* Begin XCConfigurationList section */
+		1ED00BBC0099E0D70106FB20 = {
+			buildConfigurations = (
+				98E398162C206F89866DBAA5,
+				31F573C1C1732BCE6B7B4EEB,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+			isa = XCConfigurationList;
+		};
+		B61A476A5531CC175278BDCF = {
+			buildConfigurations = (
+				80DB6ACE13380ADC3D86D6C5,
+				08723DE70035A45CE7E33CC1,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+			isa = XCConfigurationList;
+		};
+		F196B339A726FAF5BDE22DD5 = {
+			buildConfigurations = (
+				61A8FE553262CD7EB776D383,
+				7C80754A03446383EF99BF62,
+			);
+			defaultConfigurationIsVisible = 0;
+			defaultConfigurationName = Release;
+			isa = XCConfigurationList;
+		};
+/* End XCConfigurationList section */
+
+/* Begin XCLocalSwiftPackageReference section */
+		00399ED3B3FA2FCA129B1CCE = {
+			isa = XCLocalSwiftPackageReference;
+			relativePath = ResProxyCore;
+		};
+/* End XCLocalSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		37F0F49837F993FA942C16CC = {
+			isa = XCSwiftPackageProductDependency;
+			package = 00399ED3B3FA2FCA129B1CCE;
+			productName = ResProxyCore;
+		};
+		E5307FEB536449D701707E0C = {
+			isa = XCSwiftPackageProductDependency;
+			package = 00399ED3B3FA2FCA129B1CCE;
+			productName = ResProxyCore;
+		};
+/* End XCSwiftPackageProductDependency section */
+	};
+	rootObject = 46F86FAA6BBF9AC94A7E4595;
+}

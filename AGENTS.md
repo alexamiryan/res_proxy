@@ -14,9 +14,9 @@ a WireGuard VPN first (imported `.conf` profiles or a Mullvad account). It check
 |---|---|
 | `android/` | Sideloaded Android VPN app. Package `dev.resproxy`, minSdk 26, target/compileSdk 36 |
 | `chrome/` | Chrome MV3 extension (TypeScript + Preact, esbuild). Works in Edge/Brave/Chromium too |
-| `native/wgbridge/` | Go: Android WireGuard JNI lib (root package), `cmd/resproxy-helper` (native-messaging helper for the extension), `cmd/wgtestserver` / `cmd/testproxy` (test peers) |
+| `native/wgbridge/` | Go: Android WireGuard JNI lib (root package), `cmd/resproxy-helper` (native-messaging helper for the extension, and the iOS tunnel's data plane as a C archive), `cmd/wgtestserver` / `cmd/testproxy` (test peers) |
 | `shared/` | `FORMAT.md` (backup, settings schema, presets, verdict rules) + `test-vectors/` that every platform's tests read |
-| `ios/` (future) | Implements `shared/FORMAT.md`; WireGuard can come from `native/` via gomobile (wireguard-go is what WireGuard's own iOS app uses) |
+| `ios/` | iOS app + packet tunnel extension (Swift/SwiftUI). Bundle `dev.resproxy` (+ `.tunnel`), iOS 16+, team DK366LFCDT |
 
 **Cross-platform rule:** anything in `shared/FORMAT.md` (backup format, settings fields and defaults, preset
 syntax, verdict rules) changes on every platform in the same commit, with the vectors regenerated. New settings
@@ -62,6 +62,28 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
   ICMP pings and byte counting; it exits when Chrome closes the native port.
 - Reputation and IP-echo requests from the worker go through Chrome's proxy (so through the exit IP); with the
   helper, reputation APIs go direct first.
+
+## iOS traffic path
+
+```
+apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5 127.0.0.1 (gate) → [WireGuard netstack →] proxy
+```
+
+- The tunnel extension links `cmd/resproxy-helper` built with `GOOS=ios -buildmode=c-archive` (`bridge_ios.go`
+  exports `ResProxyCall(json)`): the same commands the Chrome extension sends over native messaging, plus `socks`
+  (SOCKS5 front for hev, random user/pass) and `gate`. The iOS build starts with the gate closed; the Chrome helper's
+  gate is always open. `fetch` with `proxy: true` goes through the exit IP, ungated (the tunnel's own checks).
+- `Tunnel/TunnelController.swift` is the `ProxyVpnService` port (connect, gate, check + auto-rotate, health + repair,
+  live settings via a Darwin notification, path monitor for network switches). hev reads/writes the utun fd directly
+  (`TunFd.c` finds it). The extension's own sockets (Go, Mullvad API, reputation, DNSBL) never go through its tunnel.
+- Network settings are applied (traffic captured) before any upstream I/O; reapplying them keeps the same utun, so
+  reconnects/repairs don't leak. Kill switch on also sets `includeAllNetworks` on the VPN configuration; LAN bypass
+  sets `excludeLocalNetworks` plus excluded routes, and the relay connects private IPs / local names directly.
+- No UDP: the relay refuses UDP ASSOCIATE (apps fall back to TCP); DNS is hev's fake-IP (100.64/10) mapdns.
+- App ↔ tunnel: settings JSON in the App Group (`group.dev.resproxy`), secrets in the Keychain (access group
+  `$(AppIdentifierPrefix)dev.resproxy.shared`), commands and status via `sendProviderMessage` (`TunnelMessage`),
+  last status / usage as files in the App Group.
+- Not on iOS: per-app split (needs MDM), proxy-only mode, site split. Their fields stay in settings for round trips.
 
 ## Invariants (don't break these)
 
@@ -131,6 +153,35 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
 | `cmd/wgtestserver/` | WireGuard test peer (also used by `wg_chain_test.go`) |
 | `cmd/testproxy/`, `internal/testproxy/` | HTTP-CONNECT + SOCKS5 test proxy with auth that logs each login |
 
+## Layout (iOS, under `ios/`)
+
+| Path | What |
+|---|---|
+| `ResProxyCore/` | Swift package shared by app and tunnel: ports of `chrome/src/core` (Models, Presets, Backup, Reputation, Vpn = wg-quick + Mullvad, Locations) plus `Store` (App Group + Keychain) and `Status` (TunnelStatus, app ↔ tunnel messages). `swift test` runs on macOS against `shared/test-vectors` |
+| `App/` | SwiftUI app: `AppModel` (NETunnelProviderManager, polling, actions, backup import), Home, Settings pages, pickers, `Pinger` (ICMP for the VPN list while disconnected). Screens follow Android's arrangement (power button home, location/VPN cards, settings hub with icon rows) in iOS style; `Theme.swift` has the shared colours (Android's status/verdict colours, brand green `#1E6B45`) and building blocks (`Card`, `PickerRow`, `SettingLabel`, `SwitchRow`, `NumberField`) |
+| `App/Assets.xcassets` | App icon (Android's launcher shield, rendered by `scripts/make-icon.swift`) and `AccentColor` |
+| `Tunnel/` | Packet tunnel: `PacketTunnelProvider`, `TunnelController`, `Native.swift` (Go bridge + hev wrappers), `TunFd.c` |
+| `scripts/gen-project.py` | Writes `ResProxy.xcodeproj` (no XcodeGen). Re-run after adding/removing files; don't hand-edit the pbxproj |
+| `scripts/build-native.sh` | Builds `build/native/<sdk>/libhev.a` + `libresproxy.a` (Go) and headers; the tunnel target runs it as a build phase |
+
+## Build and test (iOS, macOS host)
+
+- Go: `~/sdk/go/bin/go` (or `GO=`/PATH). Xcode 26. The Mac is Intel, so the simulator slice is x86_64.
+- `cd ios/ResProxyCore && swift test` (WRITE_VECTORS=1 rewrites `backup-ios.txt`).
+- `cd ios && xcodebuild -project ResProxy.xcodeproj -scheme ResProxy -destination 'generic/platform=iOS'
+  -derivedDataPath build/dd -allowProvisioningUpdates build`. `RP_SKIP_NATIVE=1` skips the native libs (type-check
+  only; the tunnel won't link).
+- Install/launch on the phone: `xcrun devicectl device install app --device <udid> build/dd/Build/Products/Debug-iphoneos/ResProxy.app`.
+  Logs: `xcrun devicectl device …` or Console.app, subsystem `dev.resproxy.tunnel`.
+- Packet tunnels don't run in the Simulator; test the VPN on a device. The UI does: Debug builds take launch env
+  `RP_DEMO=1` (sample account + connected status in memory, nothing saved), `RP_SCREEN=settings|vpn|protection|reputation|advanced|backup|account|vpnpicker`
+  and `RP_SCROLL=1` (Home scrolled to the bottom), e.g. `SIMCTL_CHILD_RP_DEMO=1 xcrun simctl launch <sim> dev.resproxy`,
+  then `xcrun simctl io <sim> screenshot x.png`.
+- Tunnel log: Settings → Diagnostics (`diag.log` in the App Group, written by `TunnelController`'s `log`, also to the
+  unified log at notice level). devicectl can't read the App Group, so Debug builds copy `diag.log`, `status.json` and
+  `settings.json` to the app's `Library/Caches/diag/` while the app is open:
+  `xcrun devicectl device copy from --device <udid> --domain-type appDataContainer --domain-identifier dev.resproxy --source Library/Caches/diag/diag.log --destination diag.log`.
+
 ## Build and test (Windows host)
 
 - Android: JDK 21 is pinned in `android/gradle.properties`. `android/local.properties` (git-ignored) needs
@@ -147,6 +198,7 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
   `resproxy-helper install` first, `uninstall` afterwards.
 - Regenerate backup vectors after a format change: `WRITE_VECTORS=1` for both `npm test` and
   `./gradlew testDebugUnitTest --tests '*writeAndroidVector'`.
+- iOS opens all three backup vectors and writes `backup-ios.txt`; Android and Chrome open it.
 - Add or extend unit tests for pure logic (parsers, presets, routes, crypto, relay behaviour) on every platform
   that has it. All suites must stay green.
 
@@ -159,6 +211,10 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
   tree on `main`, runs all test suites, builds the debug APK, the extension zip and the helper for
   windows/amd64, linux/amd64, darwin/arm64 and darwin/amd64, pushes via WSL and creates release
   `v0.1.<commit count>` with all of them attached and the commit subjects as notes.
+- From the Mac (iOS work) `release.sh` can't run (it needs Windows, WSL and `gh`): run the suites there
+  (`bash gradlew -Dorg.gradle.java.home=<JDK 21> testDebugUnitTest` with a git-ignored `local.properties` pointing at
+  `~/Library/Android/sdk`, `npm test`, `go test`, `swift test`), push with plain `git push`, and publish the release
+  later from Windows (`release.sh` skips the push when there is nothing new and creates the missing release).
 - `versionCode` is the commit count (`android/app/build.gradle.kts`), so each release installs over the previous
   one. The extension version is `0.1.<commit count>` too (stamped by `chrome/build.mjs`).
   The release ships the debug-signed APK (same key as the builds already on the phone; R8 release builds are
@@ -223,6 +279,21 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
   with defaults; bump `AppSettings.SCHEMA` only when old values must be overridden (and mirror the upgrade in
   `chrome/src/core/models.ts` `normSettings`).
 
+### iOS
+
+- Network extensions are killed above ~50 MB. `bridge_ios.go` caps the Go heap (`SetMemoryLimit` 24 MB); WireGuard
+  chaining runs a gVisor netstack in that budget.
+- `sys/kern_control.h` isn't in the iOS SDK: `TunFd.c` declares `ctl_info` / `sockaddr_ctl` / `CTLIOCGINFO` itself.
+- Turning on-demand off before `stopVPNTunnel()`, otherwise iOS reconnects right away (Connect automatically).
+- The tunnel and the app share no memory: every settings change goes through `SharedStore` + `Notify.post`.
+- Reinstalling a development build while connected: iOS re-validates the signing profile online before it launches
+  the app or the tunnel ("Profile Needs Network Validation", launch refused with `Security`). With the kill switch
+  (`includeAllNetworks`) on and on-demand retrying, the phone has no network until the tunnel runs, and the tunnel
+  can't run until validated. Sometimes it recovers in a minute; otherwise turn the VPN off in iOS Settings, open the
+  app, reconnect. Easiest: disconnect before installing a new build.
+- SwiftUI formats numbers interpolated into `Text("…")` literals by locale (`12,000`): use `Text(verbatim:)` for ports,
+  IPs and credentials.
+
 ### Chrome extension
 
 - **Chrome caches proxy credentials per proxy host** and keeps sending them preemptively: a new session's
@@ -264,6 +335,6 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
 ## Keeping this file updated
 
 `.claude/settings.json` registers a `PreToolUse` hook (`.claude/hooks/agents-md-check.sh`) on `git commit`.
-When staged changes touch `android/`, `chrome/` sources, `native/`, `shared/` or `scripts/` but not `AGENTS.md`, the commit is blocked with a
+When staged changes touch `android/`, `chrome/` sources, `ios/`, `native/`, `shared/` or `scripts/` but not `AGENTS.md`, the commit is blocked with a
 reminder to review this file. If nothing here needs to change, the commit can go through with
 `AGENTS_MD_OK=1 git commit …`.

@@ -1,0 +1,7 @@
+build/
+.build/
+ResProxyCore/.build/
+ResProxyCore/.swiftpm/
+*.xcuserstate
+xcuserdata/
+DerivedData/

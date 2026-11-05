@@ -10,7 +10,7 @@ WireGuard VPN (imported configs or a Mullvad account), so the proxy provider nev
 | Chrome / Edge / Brave | [`chrome/`](chrome) | Extension (browser traffic) |
 | Desktop helper | [`native/wgbridge/cmd/resproxy-helper`](native/wgbridge/cmd/resproxy-helper) | Optional companion for the extension: WireGuard chaining, SOCKS5 with password, pings, exact data usage |
 | Shared | [`shared/`](shared) | Backup format, settings schema and test vectors every platform is tested against |
-| iOS | — | Planned; will implement `shared/FORMAT.md` and can reuse the Go WireGuard core in `native/` |
+| iOS | [`ios/`](ios) | Packet-tunnel VPN app (whole-device traffic), same features as Android |
 
 Settings move between platforms with an encrypted backup (Settings → Backup & transfer): export on Android, import
 in Chrome, and the other way round. Mullvad device keys stay per install; each install registers its own.
@@ -37,6 +37,22 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 → [WireGuard →] pr
   unpacked. The extension ID is fixed (`chrome/extension-key.pub`), so the helper and updates keep working.
 - Limits: only browser traffic; Chrome drops the proxy if the extension is disabled; QUIC/UDP isn't proxied (Chrome
   uses TCP through proxies, WebRTC is blocked from non-proxied UDP).
+
+## iOS
+
+```
+apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay (gate) → [WireGuard →] SOCKS5 / HTTP proxy
+```
+
+- Same features as Android: presets and location targeting, sticky sessions per location, New IP, reputation check
+  with auto-rotate and a traffic gate, kill switch, health checks and repair (network changes, stalled engine, lost
+  VPN handshake), live settings, LAN bypass, WireGuard / Mullvad chaining, data usage, backup import/export.
+- The data plane in the tunnel extension is the desktop helper (`native/wgbridge/cmd/resproxy-helper`) built as a C
+  archive, plus hev-socks5-tunnel. Settings live in the App Group container, secrets in the Keychain.
+- Kill switch on also sets iOS's "include all networks", so nothing leaves outside the tunnel even while it reconnects.
+- Not on iOS: per-app split tunnelling (needs MDM) and proxy-only mode; their settings are kept for backups.
+- Needs a paid Apple developer team (Network Extension entitlement) and a real device; packet tunnels don't run in the
+  Simulator.
 
 ## Android: how traffic flows
 
@@ -81,6 +97,14 @@ cd android && ./gradlew testDebugUnitTest assembleDebug     # app/build/outputs/
 ```bash
 cd chrome && npm ci && npm test && npm run build            # dist/extension (load unpacked)
 CHROMIUM=…/chrome.exe node test/e2e.mjs [--helper]          # end-to-end in a real Chromium with a local test proxy
+```
+
+**iOS** (`ios/`): Xcode 16+ and Go. `python3 ios/scripts/gen-project.py` writes `ios/ResProxy.xcodeproj`; the
+tunnel target runs `ios/scripts/build-native.sh` (hev + Go bridge) itself.
+
+```bash
+cd ios/ResProxyCore && swift test                          # shared vectors, presets, reputation, WireGuard parsing
+cd ios && xcodebuild -scheme ResProxy -destination 'generic/platform=iOS' -allowProvisioningUpdates build
 ```
 
 **Helper** (`native/wgbridge`):

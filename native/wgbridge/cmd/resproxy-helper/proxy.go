@@ -24,6 +24,8 @@ type state struct {
 	token    string
 	upstream endpoint
 	wg       *wgTunnel
+	socks    *socksServer // iOS: the relay hev talks to
+	gate     *gate        // iOS: closed until the exit IP passed the check; the Chrome helper keeps it open
 
 	conns   sync.Map // net.Conn → struct{}
 	down    atomic.Int64
@@ -41,7 +43,7 @@ type hostFail struct {
 	host string
 }
 
-func newState() *state { return &state{} }
+func newState() *state { return &state{gate: newGate(true)} }
 
 func (s *state) dialer() dialFunc {
 	s.mu.Lock()
@@ -92,6 +94,12 @@ func (s *state) setUpstream(up endpoint) error {
 	s.mu.Unlock()
 	// Connections on the old session would keep its IP: drop them (like the Android relay).
 	s.closeConns()
+	s.mu.Lock()
+	ss := s.socks
+	s.mu.Unlock()
+	if ss != nil {
+		ss.closeConns()
+	}
 	return nil
 }
 
@@ -105,11 +113,14 @@ func (s *state) closeConns() {
 
 func (s *state) stopAll() {
 	s.mu.Lock()
-	ln, wg := s.ln, s.wg
-	s.ln, s.wg = nil, nil
+	ln, wg, ss := s.ln, s.wg, s.socks
+	s.ln, s.wg, s.socks = nil, nil, nil
 	s.mu.Unlock()
 	if ln != nil {
 		ln.Close()
+	}
+	if ss != nil {
+		ss.stop()
 	}
 	s.closeConns()
 	if wg != nil {
@@ -172,6 +183,7 @@ func (s *state) status() map[string]any {
 	s.fails = kept
 	s.failMu.Unlock()
 	out["failedHosts"] = len(hosts)
+	out["gateOpen"] = s.gate.isOpen()
 	s.mu.Lock()
 	wg := s.wg
 	s.mu.Unlock()

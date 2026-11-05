@@ -36,6 +36,10 @@ describe('backup (shared vectors)', () => {
     expect(await open(readFileSync(join(VEC, 'backup-chrome.txt'), 'utf8'), PASS)).toEqual(normPayload(payloadJson()))
   })
 
+  it('opens the committed iOS vector', async () => {
+    expect(await open(readFileSync(join(VEC, 'backup-ios.txt'), 'utf8'), PASS)).toEqual(normPayload(payloadJson()))
+  })
+
   it('carries a shared Mullvad device only when present', async () => {
     const device = { id: 'd1', name: 'Calm Fox', privateKey: 'yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=', publicKey: 'pk', ipv4: '10.1.2.2/32', ipv6: '' }
     const p = { ...normPayload(payloadJson()), mullvadDevice: device }

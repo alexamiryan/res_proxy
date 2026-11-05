@@ -14,7 +14,7 @@ if printf '%s' "$input" | grep -Eq 'git( -C [^ ]+)? add|commit -[a-zA-Z]*a'; the
 $(git status --porcelain 2>/dev/null | cut -c4-)"
 fi
 
-relevant=$(printf '%s\n' "$changed" | grep -E '^(android/|chrome/(src|static|test)/|chrome/[^/]*\.(mjs|json)$|native/|shared/|scripts/)' | grep -v 'package-lock\.json$' | head -5)
+relevant=$(printf '%s\n' "$changed" | grep -E '^(android/|chrome/(src|static|test)/|chrome/[^/]*\.(mjs|json)$|ios/|native/|shared/|scripts/)' | grep -v 'package-lock\.json$' | head -5)
 [ -z "$relevant" ] && exit 0
 printf '%s\n' "$changed" | grep -qx 'AGENTS.md' && exit 0
 

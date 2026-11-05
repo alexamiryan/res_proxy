@@ -1,14 +1,15 @@
 # Shared formats
 
 Everything the platforms exchange or must compute identically. The Android app (Kotlin), the Chrome extension
-(TypeScript) and the planned iOS app each implement these, and each runs its tests against the vectors in
+(TypeScript) and the iOS app (Swift, `ios/ResProxyCore`) each implement these, and each runs its tests against the vectors in
 `test-vectors/`. A change here needs all implementations (and the vectors) updated in the same commit.
 
 | File | Checked by |
 |---|---|
 | `test-vectors/backup-payload.json` | the decrypted payload both backups below must equal |
-| `test-vectors/backup-android.txt` | made by Android (`WRITE_VECTORS=1 ./gradlew testDebugUnitTest --tests '*writeAndroidVector'`); Chrome opens it |
-| `test-vectors/backup-chrome.txt` | made by Chrome (`WRITE_VECTORS=1 npm test`); Android opens it |
+| `test-vectors/backup-android.txt` | made by Android (`WRITE_VECTORS=1 ./gradlew testDebugUnitTest --tests '*writeAndroidVector'`); Chrome and iOS open it |
+| `test-vectors/backup-chrome.txt` | made by Chrome (`WRITE_VECTORS=1 npm test`); Android and iOS open it |
+| `test-vectors/backup-ios.txt` | made by iOS (`cd ios/ResProxyCore && WRITE_VECTORS=1 swift test`); Android and Chrome open it |
 | `test-vectors/presets.json` | provider credential building (input profile → expected endpoint) |
 
 Passphrase of both backup vectors: `correct horse battery staple`.

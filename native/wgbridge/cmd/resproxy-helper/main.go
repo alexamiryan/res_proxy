@@ -161,7 +161,10 @@ func (s *server) reply(v map[string]any) {
 	s.out.Write(b)
 }
 
-func (s *server) handle(req request) {
+func (s *server) handle(req request) { s.reply(s.call(req)) }
+
+// call runs one request and builds its reply (native messaging, or ResProxyCall on iOS).
+func (s *server) call(req request) map[string]any {
 	res, err := s.dispatch(req)
 	if err != nil {
 		code := ""
@@ -169,15 +172,14 @@ func (s *server) handle(req request) {
 		if errors.As(err, &ce) {
 			code = ce.code
 		}
-		s.reply(map[string]any{"id": req.ID, "ok": false, "error": err.Error(), "code": code})
-		return
+		return map[string]any{"id": req.ID, "ok": false, "error": err.Error(), "code": code}
 	}
 	if res == nil {
 		res = map[string]any{}
 	}
 	res["id"] = req.ID
 	res["ok"] = true
-	s.reply(res)
+	return res
 }
 
 func (s *server) dispatch(req request) (map[string]any, error) {
@@ -243,7 +245,11 @@ func (s *server) dispatch(req request) (map[string]any, error) {
 		if err := json.Unmarshal(req.Raw, &a); err != nil {
 			return nil, err
 		}
-		status, body, err := directFetch(a)
+		client := directClient
+		if a.Proxy {
+			client = st.proxyClient()
+		}
+		status, body, err := fetchWith(client, a)
 		if err != nil {
 			return nil, withCode("net", err)
 		}
@@ -258,6 +264,27 @@ func (s *server) dispatch(req request) (map[string]any, error) {
 			return nil, err
 		}
 		return map[string]any{"addrs": addrs}, nil
+	case "socks":
+		var a struct {
+			User      string `json:"user"`
+			Pass      string `json:"pass"`
+			LanDirect bool   `json:"lanDirect"`
+		}
+		if err := json.Unmarshal(req.Raw, &a); err != nil {
+			return nil, err
+		}
+		port, err := st.startSocks(a.User, a.Pass, a.LanDirect)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"port": port}, nil
+	case "gate":
+		var a struct {
+			Open bool `json:"open"`
+		}
+		json.Unmarshal(req.Raw, &a)
+		st.setGate(a.Open)
+		return nil, nil
 	case "stop":
 		st.stopAll()
 		return nil, nil
