@@ -226,9 +226,6 @@ struct ReputationView: View {
                         .pickerStyle(.segmented).labelsHidden()
                     }
                     .padding(.vertical, 4)
-                    NumberField(title: "Max IPs to try per connect", value: model.settings.maxRotations, range: 1...100) { v in
-                        model.updateSettings { $0.maxRotations = v }
-                    }
                 }
             }
             Section {

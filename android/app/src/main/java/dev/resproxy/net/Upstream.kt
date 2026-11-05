@@ -17,6 +17,15 @@ class ProxyAuthException(message: String) : IOException(message)
 class SocksRefusedException(message: String, val code: Int) : IOException(message)
 
 /**
+ * The proxy itself answered (handshake and login fine) but couldn't reach the target. For the probe target that
+ * means the residential exit node behind a sticky session went offline; that session never recovers.
+ */
+fun exitNodeDead(e: Throwable): Boolean = e is SocksRefusedException ||
+    (e is IOException && e !is ProxyAuthException && e.message?.let { m ->
+        m.startsWith("HTTP CONNECT to ") && Regex(""" 50[234]\b""").containsMatchIn(m)
+    } == true)
+
+/**
  * Opens TCP tunnels to arbitrary targets through the configured residential proxy.
  * [onRtt] gets round-trip samples (ms) to the proxy itself, measured during the handshake.
  */

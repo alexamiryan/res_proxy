@@ -410,7 +410,6 @@ function ProtectionPage({ state }: { state: UiState }) {
           <span class="field-label">Accept an IP only if it is</span>
           <Segmented label="Accept threshold" value={s.rotateThreshold === 'BAD' ? 'BAD' : 'SUSPICIOUS'} onChange={(v) => void patch({ rotateThreshold: v })}
             options={[{ value: 'SUSPICIOUS', label: 'Clean' }, { value: 'BAD', label: 'Not bad' }]} />
-          <NumberField label="Max rotations" min={1} max={50} value={s.maxRotations} onSave={(v) => void patch({ maxRotations: v })} />
         </div>
       </Group>
       <Hint>Chrome removes an extension's proxy when the extension is turned off or removed; traffic then goes direct.</Hint>

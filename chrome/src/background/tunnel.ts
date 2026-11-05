@@ -28,6 +28,9 @@ import { log } from './log'
 import { addUsage, loadPrefs, loadSecrets, loadSettings, updateSecrets, updateSettings, type Secrets } from './store'
 
 const TICK_MS = 5000
+/** Rotations in a row without a pause; after that one every ROTATION_PAUSE_MS (under the worker's 30 s idle limit). */
+const QUICK_ROTATIONS = 10
+const ROTATION_PAUSE_MS = 20_000
 /** PAC target while nothing is listening yet: every proxied request fails, nothing goes direct. */
 const BLACKHOLE = 'PROXY 127.0.0.1:9'
 
@@ -788,13 +791,12 @@ export class Tunnel {
           this.update((x) => ({ ...x, message: `IP is ${word(report.verdict)} — traffic blocked. Click New IP.` }))
           return
         }
-        const max = clamp(s.maxRotations, 1, 50)
-        if (attempt >= max) {
-          this.rt.waitingForUser = true
-          const msg = `No clean IP after ${attempt} tries — traffic blocked. Click New IP to keep trying.`
-          this.update((x) => ({ ...x, message: msg }))
-          notify('IP reputation', msg)
-          return
+        // No limit: keep rotating until an IP passes. After the first quick tries, pace them.
+        if (attempt >= QUICK_ROTATIONS) {
+          if (attempt === QUICK_ROTATIONS) notify('IP reputation', `No clean IP after ${attempt} tries — traffic blocked, still trying`)
+          this.update((x) => ({ ...x, message: `No clean IP after ${attempt} tries — traffic blocked, trying again shortly` }))
+          await new Promise((r) => setTimeout(r, ROTATION_PAUSE_MS))
+          if (!alive()) return
         }
         await this.switchSession(newSessionId())
       }

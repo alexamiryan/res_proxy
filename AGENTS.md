@@ -96,8 +96,10 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
    connect, each new session and settings rebuilds until the exit IP's verdict is below the rotate threshold.
    While closed, the relay (and in proxy-only mode the system proxy) holds new connections for up to 8 s,
    then refuses them, and drops open ones when an IP turns out bad. The app's own checks use a separate,
-   ungated `httpProxy`. Rotations used up, or a bad IP with auto-rotate off, leave traffic blocked until
-   "New IP". Failed or UNKNOWN checks are retried by the health loop. Turning checks off opens the gate.
+   ungated `httpProxy`. Auto-rotate has **no limit** (10 quick tries, then one every 20 s; `maxRotations` is
+   unused, kept for backups): once on, the tunnel keeps trying until an IP passes. Only a bad IP with auto-rotate
+   off leaves traffic blocked until "New IP". Failed or UNKNOWN checks are retried by the health loop. Turning
+   checks off opens the gate.
 4. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
    retrying. Off: failures disconnect.
 5. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
@@ -243,6 +245,10 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   backup file).
 - Some networks sinkhole provider and reputation domains (e.g. `iproyal.com`). Every host lookup goes through
   `Resolver` (DoH fallback to 1.1.1.1 / 8.8.8.8 by IP).
+- **Sticky exit nodes die.** The proxy still logs us in but answers every CONNECT with SOCKS "host unreachable"
+  (or HTTP 502/503/504). Repairs and reconnects reuse the remembered session, so the tunnel sat in `PROXY_DOWN`
+  forever (seen with Geonode on one Android user while others were fine). Android: two such health probes in a
+  row (`exitNodeDead` in `net/Upstream.kt`) switch to a new session. Chrome and iOS don't do this yet.
 - IPRoyal SOCKS5 has no UDP, so apps fall back to TCP. The default session lifetime is the maximum
   (`MAX_LIFETIME_MINUTES`, 7 days, IPRoyal's limit). The Geonode preset caps it at 1440 min. Schema 3
   migrated the old 1440 default to 7 days.

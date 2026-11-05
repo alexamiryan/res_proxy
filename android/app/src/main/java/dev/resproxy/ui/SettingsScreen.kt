@@ -243,7 +243,6 @@ private fun ReputationSettings(s: AppSettings, update: ((AppSettings) -> AppSett
                     FilterChip(s.rotateThreshold == Verdict.SUSPICIOUS, { update { it.copy(rotateThreshold = Verdict.SUSPICIOUS) } }, label = { Text("Clean") })
                     FilterChip(s.rotateThreshold == Verdict.BAD, { update { it.copy(rotateThreshold = Verdict.BAD) } }, label = { Text("Not bad") })
                 }
-                NumberField("Max IPs to try per connect", s.maxRotations) { v -> update { it.copy(maxRotations = v) } }
             }
         }
     }

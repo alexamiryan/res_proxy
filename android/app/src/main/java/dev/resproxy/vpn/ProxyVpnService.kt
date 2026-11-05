@@ -30,6 +30,7 @@ import dev.resproxy.net.LocalSocksServer
 import dev.resproxy.net.ProxyAuthException
 import dev.resproxy.net.ProxyProbe
 import dev.resproxy.net.RelayHealth
+import dev.resproxy.net.exitNodeDead
 import dev.resproxy.net.TrafficGate
 import dev.resproxy.net.Upstream
 import dev.resproxy.net.WireGuard
@@ -659,6 +660,7 @@ class ProxyVpnService : VpnService() {
      */
     private suspend fun healthLoop() {
         var fails = 0
+        var deadExitProbes = 0
         var lastProbe = System.currentTimeMillis()
         var lastPing = 0L
         var seenOk = relayHealth.ok.get()
@@ -735,7 +737,7 @@ class ProxyVpnService : VpnService() {
             lastProbe = now
             val result = runCatching { ProxyProbe.run(up) }
             if (result.isSuccess) {
-                fails = 0
+                fails = 0; deadExitProbes = 0
                 lock.withLock {
                     if (profile?.tunnelMode == TunnelMode.FULL && !hevRunning) runCatching { startHev() }
                 }
@@ -751,6 +753,16 @@ class ProxyVpnService : VpnService() {
             } else {
                 fails++
                 val e = result.exceptionOrNull()!!
+                deadExitProbes = if (exitNodeDead(e)) deadExitProbes + 1 else 0
+                if (deadExitProbes >= DEAD_EXIT_PROBES && profile?.sticky == true) {
+                    // Repairs and reconnects reuse the same session, so they'd never get past a dead exit node.
+                    Log.i(TAG, "exit node not answering (${e.message}), switching to a new session")
+                    deadExitProbes = 0; fails = 0
+                    switchSession(Presets.newSessionId())
+                    TunnelState.update { it.copy(message = "Exit IP stopped working — switched to a new one") }
+                    launchCheck(force = false)
+                    continue
+                }
                 if (fails >= 2 || e is ProxyAuthException || down || suspect != null) {
                     if (!onProxyFailure(e)) return
                     if (e !is ProxyAuthException && (fails % 3 == 0 || suspect != null)) repair(suspect ?: "proxy unreachable", force = fails % 3 == 0)
@@ -818,12 +830,11 @@ class ProxyVpnService : VpnService() {
                     TunnelState.update { it.copy(message = "IP is ${verdictWord(report.verdict)} — traffic blocked. Tap New IP.") }
                     break
                 }
-                val max = s.maxRotations.coerceIn(1, 50)
-                if (attempt >= max) {
-                    waitingForUser = true
-                    TunnelState.update { it.copy(message = "No clean IP after $attempt tries — traffic blocked. Tap New IP to keep trying.") }
-                    notifyRotation("No clean IP after $attempt rotations — traffic blocked. Tap New IP to keep trying.")
-                    break
+                // No limit: keep rotating until an IP passes. After the first quick tries, pace them.
+                if (attempt >= QUICK_ROTATIONS) {
+                    if (attempt == QUICK_ROTATIONS) notifyRotation("No clean IP after $attempt tries — traffic blocked, still trying")
+                    TunnelState.update { it.copy(message = "No clean IP after $attempt tries — traffic blocked, trying again shortly") }
+                    delay(ROTATION_PAUSE_MS)
                 }
                 attempt++
                 switchSession(Presets.newSessionId())
@@ -896,5 +907,10 @@ class ProxyVpnService : VpnService() {
         private const val ALERT_ID = 2
         private const val TAG = "ResProxy"
         private const val TICK_MS = 5_000L
+        /** Rotations in a row without a pause; after that one every [ROTATION_PAUSE_MS]. */
+        private const val QUICK_ROTATIONS = 10
+        private const val ROTATION_PAUSE_MS = 20_000L
+        /** Probes in a row where the proxy answered but couldn't reach the target: the sticky exit node is gone. */
+        private const val DEAD_EXIT_PROBES = 2
     }
 }

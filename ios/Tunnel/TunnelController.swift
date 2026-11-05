@@ -756,13 +756,12 @@ final class TunnelController {
                 update { $0.message = "IP is \(report.verdict.word) — traffic blocked. Tap New IP." }
                 return
             }
-            let maxR = clamp(s.maxRotations, 1, 50)
-            if attempt >= maxR {
-                waitingForUser = true
-                let m = "No clean IP after \(attempt) tries — traffic blocked. Tap New IP to keep trying."
-                update { $0.message = m }
-                notify(m)
-                return
+            // No limit: keep rotating until an IP passes. After the first quick tries, pace them (20 s).
+            if attempt >= 10 {
+                if attempt == 10 { notify("No clean IP after \(attempt) tries — traffic blocked, still trying") }
+                update { $0.message = "No clean IP after \(attempt) tries — traffic blocked, trying again shortly" }
+                try? await Task.sleep(nanoseconds: 20_000_000_000)
+                if Task.isCancelled { return }
             }
             attempt += 1
             await switchSession(Presets.newSessionId())

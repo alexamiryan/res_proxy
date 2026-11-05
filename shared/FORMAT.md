@@ -82,7 +82,7 @@ Rules every implementation follows:
 | `recheckOnConnect` | bool, true | gate traffic on the reputation check |
 | `autoRotate` | bool, true | |
 | `rotateThreshold` | `SUSPICIOUS` \| `BAD` | accept an IP whose verdict severity is below this (SUSPICIOUS = only clean) |
-| `maxRotations` | int, 10 | 1–50 |
+| `maxRotations` | int, 10 | unused: auto-rotate has no limit (10 quick tries, then one every 20 s); kept so backups round-trip |
 | `healthIntervalSec` | int, 30 | 10–600 |
 | `savedLocations` | `{PROVIDER: Location}` | restored when switching provider |
 | `chainEnabled` | bool | reach the proxy through the VPN in `vpnExit` |
