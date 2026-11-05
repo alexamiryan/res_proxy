@@ -53,14 +53,18 @@ class AppContainer(context: Context) {
     /** Completes once stored data has been migrated to the current schema. */
     val ready = CompletableDeferred<Unit>()
 
-    /** Snapshot for export; connection state is left out so the target starts disconnected. */
-    suspend fun exportBackup() = BackupPayload(
+    /**
+     * Snapshot for export; connection state is left out so the target starts disconnected. [shareMullvadDevice]
+     * includes this install's Mullvad device so the importing side reuses it (see [BackupPayload.mullvadDevice]).
+     */
+    suspend fun exportBackup(shareMullvadDevice: Boolean = false) = BackupPayload(
         createdAt = System.currentTimeMillis(),
         settings = settings.current().copy(wasConnected = false, sessionId = ""),
         accounts = accounts.accounts.first().values.toList(),
         apiKeys = settings.currentKeys(),
         vpnProfiles = vpn.profiles(),
         mullvadNumber = vpn.mullvad()?.number.orEmpty(),
+        mullvadDevice = if (shareMullvadDevice) vpn.mullvad()?.device else null,
     )
 
     /**
@@ -73,6 +77,7 @@ class AppContainer(context: Context) {
         val legacy = b.chain?.takeIf { b.vpnProfiles.isEmpty() && it.config.isNotBlank() }?.let { VpnProfile(name = it.name, config = it.config) }
         vpn.saveProfiles(b.vpnProfiles.ifEmpty { listOfNotNull(legacy) })
         setMullvadNumber(b.mullvadNumber)
+        b.mullvadDevice?.let { adoptMullvadDevice(b.mullvadNumber, it) }
         settings.setKeys(b.apiKeys)
         settings.update {
             val exit = if (legacy != null && b.settings.vpnExit.isEmpty()) VpnExit.imported(legacy.id) else b.settings.vpnExit
@@ -90,6 +95,18 @@ class AppContainer(context: Context) {
             n.isEmpty() -> vpn.saveMullvad(null)
             cur?.number != n -> vpn.saveMullvad(dev.resproxy.data.MullvadAccount(number = n))
         }
+    }
+
+    /**
+     * Uses a Mullvad device shared from another install. This install's own device, if it had another one, is removed
+     * from the account so its slot is freed.
+     */
+    suspend fun adoptMullvadDevice(number: String, device: dev.resproxy.data.MullvadDevice) {
+        val n = MullvadClient.normalize(number)
+        if (n.isEmpty() || device.privateKey.isBlank()) return
+        val cur = vpn.mullvad()?.takeIf { it.number == n }
+        cur?.device?.takeIf { it.id != device.id }?.let { old -> runCatching { mullvad.removeDevice(n, old.id) } }
+        vpn.saveMullvad(dev.resproxy.data.MullvadAccount(number = n, expiry = cur?.expiry.orEmpty(), device = device))
     }
 
     /** Logs in to Mullvad (registering this install's key if needed) and stores the result. */

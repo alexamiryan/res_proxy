@@ -22,8 +22,14 @@ data class BackupPayload(
     val chain: VpnChain? = null,
     val apiKeys: ApiKeys = ApiKeys(),
     val vpnProfiles: List<VpnProfile> = emptyList(),
-    /** The Mullvad device key stays per install; the other side registers its own. */
+    /** The Mullvad device key stays per install by default; the other side registers its own. */
     val mullvadNumber: String = "",
+    /**
+     * Only when the user opts in at export: this install's Mullvad device (WireGuard key), so the importing install
+     * uses the same device instead of taking another of the account's 5 slots. Safe only if the installs are never
+     * connected at the same time.
+     */
+    val mullvadDevice: MullvadDevice? = null,
 )
 
 class WrongPassphraseException : IOException("Wrong passphrase or damaged backup")

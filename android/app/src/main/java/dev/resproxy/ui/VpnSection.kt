@@ -148,6 +148,11 @@ fun VpnSettings(s: AppSettings) {
                 ) { Text(if (busy) "Signing in…" else "Add Mullvad account") }
                 Hint("Registers this phone profile as one of your account's 5 devices.", Modifier)
             }
+            // All 5 slots taken: let the user see which installs hold them and free one.
+            if (error?.contains("5 devices") == true && MullvadClient.normalize(number).length >= 10) {
+                GroupDivider()
+                MullvadDevices(MullvadClient.normalize(number), thisDeviceId = null, startOpen = true)
+            }
         } else {
             val masked = "•••• " + acc.number.takeLast(4)
             SettingRow(
@@ -157,6 +162,8 @@ fun VpnSettings(s: AppSettings) {
                     acc.expiry.takeIf { it.isNotBlank() }?.let { "paid until ${it.take(10)}" },
                 ).joinToString(" · "),
             )
+            GroupDivider()
+            MullvadDevices(acc.number, thisDeviceId = acc.device?.id)
             GroupDivider()
             SettingRow("Refresh account and server list", icon = Icons.Default.Refresh, onClick = {
                 busy = true; error = null
@@ -244,6 +251,64 @@ fun VpnSettings(s: AppSettings) {
                 }) { Text("Remove") }
             },
             dismissButton = { TextButton(onClick = { removingMullvad = false }) { Text("Cancel") } },
+        )
+    }
+}
+
+/**
+ * The account's devices. Every install registers its own: each Android profile, each browser with the extension.
+ * Mullvad names them (e.g. "Tidy Owl"); [thisDeviceId] marks this install's. Others can be removed to free a slot;
+ * an install whose device was removed registers a new one when it next connects.
+ */
+@Composable
+private fun MullvadDevices(number: String, thisDeviceId: String?, startOpen: Boolean = false) {
+    val c = LocalContext.current.container
+    val scope = rememberCoroutineScope()
+    var open by remember { mutableStateOf(startOpen) }
+    var devices by remember { mutableStateOf<List<dev.resproxy.net.MullvadDeviceInfo>?>(null) }
+    var loadError by remember { mutableStateOf<String?>(null) }
+    var removing by remember { mutableStateOf<dev.resproxy.net.MullvadDeviceInfo?>(null) }
+    fun load() {
+        loadError = null
+        scope.launch { runCatching { c.mullvad.devices(number) }.onSuccess { devices = it }.onFailure { loadError = it.message } }
+    }
+    LaunchedEffect(open, number) { if (open && devices == null) load() }
+    SettingRow(
+        "Devices on this account" + (devices?.let { " (${it.size}/5)" } ?: ""),
+        if (open) null else "See which installs use your 5 slots",
+        if (open) Icons.Default.ExpandLess else Icons.Default.ExpandMore,
+        onClick = { open = !open },
+    )
+    if (!open) return
+    when {
+        loadError != null -> Hint(loadError!!, Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        devices == null -> Hint("Loading…", Modifier.padding(horizontal = 16.dp, vertical = 4.dp))
+        else -> devices!!.forEach { d ->
+            val mine = d.id == thisDeviceId
+            SettingRow(
+                d.name.ifBlank { d.id.take(8) },
+                listOfNotNull(if (mine) "This phone profile" else null, d.created.takeIf { it.isNotBlank() }?.let { "added ${it.take(10)}" })
+                    .joinToString(" · "),
+                if (mine) Icons.Default.Check else null,
+                trailing = { if (!mine) IconButton(onClick = { removing = d }) { Icon(Icons.Default.Delete, "Remove ${d.name}") } },
+            )
+        }
+    }
+    removing?.let { d ->
+        AlertDialog(
+            onDismissRequest = { removing = null },
+            title = { Text("Remove “${d.name}”?") },
+            text = { Text("Frees a slot on your Mullvad account. The install using this device (another phone profile or a browser) signs in again with a new device when it next connects.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    removing = null
+                    scope.launch {
+                        runCatching { c.mullvad.removeDevice(number, d.id) }.onFailure { loadError = it.message }
+                        load()
+                    }
+                }) { Text("Remove") }
+            },
+            dismissButton = { TextButton(onClick = { removing = null }) { Text("Cancel") } },
         )
     }
 }

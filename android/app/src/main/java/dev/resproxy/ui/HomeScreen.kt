@@ -57,6 +57,7 @@ import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import dev.resproxy.container
+import dev.resproxy.data.VpnExit
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.text.style.TextAlign
@@ -90,6 +91,7 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSetti
 
     val vpnProfiles by c.vpn.profiles.collectAsState(initial = emptyList())
     val relays by c.mullvad.relays.collectAsState()
+    val mullvadAccount by c.vpn.mullvad.collectAsState(initial = null)
     var pickingVpn by remember { mutableStateOf(false) }
 
     LaunchedEffect(provider, account) { locations.refresh(account) }
@@ -168,6 +170,11 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSetti
                 Card(Modifier.fillMaxWidth()) {
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                         PickerRow("VPN before proxy", vpnLabel(s, vpnProfiles, relays)) { pickingVpn = true }
+                        val device = mullvadAccount?.device?.name?.takeIf { it.isNotBlank() }
+                        if (s.chainEnabled && VpnExit.parse(s.vpnExit) is VpnExit.Mullvad && device != null) {
+                            Text("Mullvad device: $device", style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
+                        }
                     }
                 }
                 if (pickingVpn) VpnPickerDialog(

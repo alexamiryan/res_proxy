@@ -3,7 +3,7 @@
 // AAD = the prefix) with a PBKDF2-HMAC-SHA256 key. Spec and test vectors: shared/FORMAT.md, shared/test-vectors/.
 
 import {
-  type Account, type ApiKeys, type AppSettings, type VpnProfile,
+  type Account, type ApiKeys, type AppSettings, type MullvadDevice, type VpnProfile,
   normAccount, normApiKeys, normSettings, normVpnProfile, defaultSettings, emptyApiKeys,
 } from './models'
 
@@ -20,6 +20,11 @@ export interface BackupPayload {
   apiKeys: ApiKeys
   vpnProfiles: VpnProfile[]
   mullvadNumber: string
+  /**
+   * Only when the user opts in at export: the exporting install's Mullvad device, so the importing install reuses
+   * it instead of taking another of the account's 5 slots. Safe only if they're never connected at the same time.
+   */
+  mullvadDevice: MullvadDevice | null
   [extra: string]: unknown
 }
 
@@ -99,5 +104,14 @@ export function normPayload(v: unknown): BackupPayload {
     apiKeys: o.apiKeys ? normApiKeys(o.apiKeys) : emptyApiKeys(),
     vpnProfiles: Array.isArray(o.vpnProfiles) ? o.vpnProfiles.map(normVpnProfile).filter((p): p is VpnProfile => p !== null) : [],
     mullvadNumber: typeof o.mullvadNumber === 'string' ? o.mullvadNumber : '',
+    mullvadDevice: normDevice(o.mullvadDevice),
   }
+}
+
+function normDevice(v: unknown): MullvadDevice | null {
+  if (typeof v !== 'object' || v === null) return null
+  const d = v as Record<string, unknown>
+  const s = (k: string) => (typeof d[k] === 'string' ? (d[k] as string) : '')
+  if (!s('id') || !s('privateKey')) return null
+  return { id: s('id'), name: s('name'), privateKey: s('privateKey'), publicKey: s('publicKey'), ipv4: s('ipv4'), ipv6: s('ipv6') }
 }

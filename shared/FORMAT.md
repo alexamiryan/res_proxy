@@ -39,7 +39,8 @@ long lines).
   "chain": null,
   "apiKeys": { "abuseIpDb": "", "ipqs": "", "proxycheck": "", "ipapiIs": "", "scamalyticsUser": "", "scamalyticsKey": "" },
   "vpnProfiles": [ { "id": "a1b2c3d4", "name": "Proton NL", "config": "<wg-quick .conf text>" } ],
-  "mullvadNumber": "1234567890123456"
+  "mullvadNumber": "1234567890123456",
+  "mullvadDevice": null
 }
 ```
 
@@ -52,8 +53,12 @@ Rules every implementation follows:
 - `settings.wasConnected` is `false` and `settings.sessionId` is `""` in exports: the importing side starts disconnected.
 - `chain` is the legacy single VPN config (old Android backups). On import, when `vpnProfiles` is empty and
   `chain.config` is set, it becomes a profile and, if `settings.vpnExit` is empty, the selected VPN.
-- The Mullvad **device key never travels** (it's per install). Only `mullvadNumber`; each install registers its own
+- The Mullvad device key is per install by default: only `mullvadNumber` travels and each install registers its own
   WireGuard key as a Mullvad device when it first connects. An import keeps the local device if the number is unchanged.
+- `mullvadDevice` (`{id, name, privateKey, publicKey, ipv4, ipv6}` or `null`) is set only when the user opts in at
+  export ("Share Mullvad device"). The importing install then uses that device; if it had a different one of its own
+  on the same account, it removes that one from the account (frees a slot). Installs sharing a device must never be
+  connected at the same time.
 - Import replaces accounts, settings, API keys and VPN profiles.
 
 ### AppSettings (schema 3)

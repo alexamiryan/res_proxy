@@ -5,7 +5,7 @@ import {
   emptyAccount, randomId,
 } from '../core/models'
 import { baseUsername, buildEndpoint, parseProxyLine, presetOf, profileFrom } from '../core/presets'
-import { parseWireGuard, wgEndpoint } from '../core/vpn'
+import { type MullvadDeviceInfo, parseWireGuard, wgEndpoint } from '../core/vpn'
 import { normalizeSite } from '../core/pac'
 import type { BackupPreview, HelperInfo, UiState } from '../shared/protocol'
 import { formatBytes, send, useUiState } from './api'
@@ -53,7 +53,7 @@ function Options() {
         {current === 'split' && <SplitPage s={st.settings} />}
         {current === 'protection' && <ProtectionPage state={st} />}
         {current === 'reputation' && <ReputationPage keys={st.apiKeys} />}
-        {current === 'backup' && <BackupPage />}
+        {current === 'backup' && <BackupPage state={st} />}
         {current === 'usage' && <UsagePage state={st} />}
         {current === 'advanced' && <AdvancedPage state={st} />}
         {current === 'helper' && <HelperPage state={st} helper={helper} recheck={() => { setHelper(null); void send<HelperInfo>({ type: 'helperInfo' }).then(setHelper) }} />}
@@ -203,6 +203,9 @@ function VpnPage({ state }: { state: UiState }) {
           <Hint>Registers this browser as one of your account's 5 devices. Backups carry only the account number; each install registers its own key.</Hint>
           {msg && <p class="hint ok">{msg}</p>}
         </div>
+        {(state.mullvad || /5 devices/.test(err)) && digits(number).length >= 10 && (
+          <MullvadDevices number={digits(number)} thisDeviceId={state.mullvad?.deviceId ?? ''} startOpen={/5 devices/.test(err)} />
+        )}
       </Group>
 
       <Group title="WireGuard profiles">
@@ -245,6 +248,48 @@ function VpnPage({ state }: { state: UiState }) {
         onConfirm={() => { void send({ type: 'deleteVpnProfile', id: del.id }); setDel(null) }} />}
       {removeMv && <Confirm title="Remove Mullvad account?" text="This browser is removed from your Mullvad devices. Other installs keep theirs." confirm="Remove" danger
         onCancel={() => setRemoveMv(false)} onConfirm={() => { setRemoveMv(false); void run(async () => { await send({ type: 'removeMullvad' }); setNumber('') }) }} />}
+    </>
+  )
+}
+
+const digits = (s: string) => s.replace(/[^0-9]/g, '')
+
+/**
+ * The account's devices: each install registers its own (every Android profile, every browser with the
+ * extension). Others can be removed to free one of the 5 slots; that install registers again on its next connect.
+ */
+function MullvadDevices({ number, thisDeviceId, startOpen }: { number: string; thisDeviceId: string; startOpen?: boolean }) {
+  const [open, setOpen] = useState(!!startOpen)
+  const [devices, setDevices] = useState<MullvadDeviceInfo[] | null>(null)
+  const [err, setErr] = useState('')
+  const [removing, setRemoving] = useState<MullvadDeviceInfo | null>(null)
+  const load = () => { setErr(''); send<MullvadDeviceInfo[]>({ type: 'mullvadDevices', number }).then(setDevices, (e: Error) => setErr(e.message)) }
+  useEffect(() => { if (open && !devices) load() }, [open, number])
+  return (
+    <>
+      <Row title={`Devices on this account${devices ? ` (${devices.length}/5)` : ''}`} sub={open ? undefined : 'See which installs use your 5 slots'} onClick={() => setOpen(!open)}>
+        <span class="chev">{open ? '▴' : '▾'}</span>
+      </Row>
+      {open && !devices && !err && <div class="form"><Hint>Loading…</Hint></div>}
+      {open && err && <div class="form"><ErrorText>{err}</ErrorText></div>}
+      {open && devices?.map((d) => {
+        const mine = d.id === thisDeviceId
+        return (
+          <Row title={<>{d.name || d.id.slice(0, 8)}{mine && <span class="chip v-clean" style="margin-left:8px">This browser</span>}</>}
+            sub={d.created ? `Added ${d.created.slice(0, 10)}` : undefined}>
+            {!mine && <button class="btn small danger" onClick={() => setRemoving(d)}>Remove</button>}
+          </Row>
+        )
+      })}
+      {removing && (
+        <Confirm title={`Remove “${removing.name}”?`} confirm="Remove" danger onCancel={() => setRemoving(null)}
+          text="Frees a slot on your Mullvad account. The install using this device (a phone profile or another browser) signs in again with a new device when it next connects."
+          onConfirm={() => {
+            const d = removing
+            setRemoving(null)
+            send({ type: 'removeMullvadDevice', id: d.id, number }).then(() => { setDevices(null); load() }, (e: Error) => setErr(e.message))
+          }} />
+      )}
     </>
   )
 }
@@ -370,7 +415,7 @@ function ReputationPage({ keys }: { keys: ApiKeys }) {
 
 // ---------- backup ----------
 
-function BackupPage() {
+function BackupPage({ state }: { state: UiState }) {
   const [mode, setMode] = useState<'idle' | 'export' | 'import'>('idle')
   return (
     <>
@@ -383,13 +428,14 @@ function BackupPage() {
           </div>
         </div>
       </Group>
-      {mode === 'export' && <ExportBox onClose={() => setMode('idle')} />}
+      {mode === 'export' && <ExportBox deviceName={state.mullvad?.deviceName ?? ''} onClose={() => setMode('idle')} />}
       {mode === 'import' && <ImportBox onClose={() => setMode('idle')} />}
     </>
   )
 }
 
-function ExportBox({ onClose }: { onClose: () => void }) {
+function ExportBox({ onClose, deviceName }: { onClose: () => void; deviceName: string }) {
+  const [share, setShare] = useState(false)
   const [p1, setP1] = useState('')
   const [p2, setP2] = useState('')
   const [err, setErr] = useState('')
@@ -399,7 +445,7 @@ function ExportBox({ onClose }: { onClose: () => void }) {
     setErr('')
     if (p1.length < 8) { setErr('Use a passphrase of at least 8 characters'); return }
     if (p1 !== p2) { setErr("The passphrases don't match"); return }
-    try { setText(await send<string>({ type: 'exportBackup', passphrase: p1 })) } catch (e) { setErr((e as Error).message) }
+    try { setText(await send<string>({ type: 'exportBackup', passphrase: p1, shareMullvadDevice: share })) } catch (e) { setErr((e as Error).message) }
   }
   const download = () => {
     const url = URL.createObjectURL(new Blob([text + '\n'], { type: 'text/plain' }))
@@ -418,6 +464,17 @@ function ExportBox({ onClose }: { onClose: () => void }) {
             <label class="field"><span class="field-label">Passphrase</span><input type="password" value={p1} onInput={(e) => setP1((e.target as HTMLInputElement).value)} autoFocus /></label>
             <label class="field"><span class="field-label">Repeat passphrase</span><input type="password" value={p2} onInput={(e) => setP2((e.target as HTMLInputElement).value)}
               onKeyDown={(e) => { if (e.key === 'Enter') void go() }} /></label>
+            {deviceName && (
+              <>
+                <label class="inline" style="justify-content:flex-start">
+                  <input type="checkbox" checked={share} onChange={(e) => setShare((e.target as HTMLInputElement).checked)} />
+                  Share Mullvad device “{deviceName}”
+                </label>
+                <Hint>{share
+                  ? "The other side uses this device instead of taking another of your 5 Mullvad slots. Never connect both at the same time: they'd keep taking the VPN from each other."
+                  : 'Off: the other side registers its own Mullvad device.'}</Hint>
+              </>
+            )}
             <ErrorText>{err}</ErrorText>
             <div class="actions"><button class="btn" onClick={onClose}>Cancel</button><button class="btn primary" onClick={() => void go()}>Create backup</button></div>
           </>
@@ -466,7 +523,7 @@ function ImportBox({ onClose }: { onClose: () => void }) {
       </div>
       {preview && (
         <Confirm title="Replace current setup?" confirm="Import" onCancel={() => setPreview(null)}
-          text={<p>Backup from {preview.createdAt ? new Date(preview.createdAt).toLocaleString() : 'an unknown date'}: {preview.accounts} account(s), {preview.vpnProfiles} VPN profile(s){preview.mullvad ? ', a Mullvad account' : ''}. Your accounts, settings, API keys and VPN profiles here are replaced.</p>}
+          text={<p>Backup from {preview.createdAt ? new Date(preview.createdAt).toLocaleString() : 'an unknown date'}: {preview.accounts} account(s), {preview.vpnProfiles} VPN profile(s){preview.mullvad ? (preview.mullvadDevice ? `, a Mullvad account sharing device “${preview.mullvadDevice}”` : ', a Mullvad account') : ''}. Your accounts, settings, API keys and VPN profiles here are replaced.</p>}
           onConfirm={() => { setPreview(null); void send({ type: 'importBackup', text, passphrase: pass }).then(() => setDone(true), (e: Error) => setErr(e.message)) }} />
       )}
     </Group>

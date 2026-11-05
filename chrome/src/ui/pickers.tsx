@@ -123,6 +123,9 @@ export function VpnPicker({ state, latency }: { state: UiState; latency?: Record
         <Picker label="VPN server" value={s.vpnExit} items={items} placeholder="Choose a VPN server" emptyText="No VPN servers"
           onPick={(i) => void send({ type: 'updateSettings', patch: { vpnExit: i.value } })} />
       )}
+      {s.chainEnabled && s.vpnExit.startsWith('mullvad:') && state.mullvad?.deviceName && (
+        <p class="hint">Mullvad device: {state.mullvad.deviceName}</p>
+      )}
       {err && <p class="hint warn">{err}</p>}
       {s.chainEnabled && !state.helper.installed && <p class="hint warn">VPN chaining needs the ResProxy helper app (Settings → Helper).</p>}
     </div>

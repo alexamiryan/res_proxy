@@ -45,5 +45,6 @@
   "vpnProfiles": [
     { "id": "a1b2c3d4", "name": "Proton NL", "config": "[Interface]\nPrivateKey = yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=\nAddress = 10.2.0.2/32\nDNS = 10.2.0.1\n\n[Peer]\nPublicKey = xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=\nAllowedIPs = 0.0.0.0/0, ::/0\nEndpoint = nl.example.net:51820\n" }
   ],
-  "mullvadNumber": "1234567890123456"
+  "mullvadNumber": "1234567890123456",
+  "mullvadDevice": null
 }

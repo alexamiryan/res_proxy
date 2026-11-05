@@ -107,6 +107,18 @@ export interface MullvadRelay {
   weight: number
 }
 
+/** A device (WireGuard key) registered on the account. Every install registers its own. */
+export interface MullvadDeviceInfo { id: string; name: string; created: string }
+
+export function parseDevices(body: string): MullvadDeviceInfo[] {
+  const list = JSON.parse(body) as unknown
+  if (!Array.isArray(list)) return []
+  return list
+    .filter((o): o is Record<string, unknown> => typeof o === 'object' && o !== null && typeof (o as { id?: unknown }).id === 'string')
+    .map((o) => ({ id: o.id as string, name: typeof o.name === 'string' ? o.name : '', created: typeof o.created === 'string' ? o.created : '' }))
+    .sort((a, b) => a.created.localeCompare(b.created))
+}
+
 export const MULLVAD_API = 'https://api.mullvad.net'
 export const MULLVAD_DNS = '10.64.0.1'
 export const relayCountry = (r: MullvadRelay) => r.location.split('-')[0]
@@ -240,6 +252,11 @@ export class MullvadClient {
       device = { id: o.id, name: o.name ?? '', privateKey, publicKey, ipv4: o.ipv4_address ?? '', ipv6: o.ipv6_address ?? '' }
     }
     return { number: n, expiry, device }
+  }
+
+  async devices(number: string): Promise<MullvadDeviceInfo[]> {
+    const token = await this.token(normalizeMullvad(number))
+    return parseDevices(await this.call(`${MULLVAD_API}/accounts/v1/devices`, { headers: { Authorization: `Bearer ${token}` } }))
   }
 
   async removeDevice(number: string, deviceId: string): Promise<void> {

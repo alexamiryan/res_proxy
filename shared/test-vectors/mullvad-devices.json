@@ -1,0 +1,11 @@
+{
+  "_comment": "Body of GET https://api.mullvad.net/accounts/v1/devices (trimmed) and the devices each client must list, oldest first.",
+  "body": [
+    { "id": "d2", "name": "Tidy Owl", "pubkey": "xTIBA5rboUvnH4htodjb6e697QjLERt1NAB4mZqp8Dg=", "hijack_dns": false, "created": "2026-10-02T09:00:00+00:00", "ipv4_address": "10.1.2.3/32", "ipv6_address": "fc00::2/128", "ports": [] },
+    { "id": "d1", "name": "Calm Fox", "pubkey": "yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=", "hijack_dns": false, "created": "2026-09-01T09:00:00+00:00", "ipv4_address": "10.1.2.2/32", "ipv6_address": "fc00::1/128", "ports": [] }
+  ],
+  "devices": [
+    { "id": "d1", "name": "Calm Fox", "created": "2026-09-01T09:00:00+00:00" },
+    { "id": "d2", "name": "Tidy Owl", "created": "2026-10-02T09:00:00+00:00" }
+  ]
+}

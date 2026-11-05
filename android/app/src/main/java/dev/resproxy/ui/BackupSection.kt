@@ -14,6 +14,10 @@ import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.material3.AlertDialog
+import androidx.compose.runtime.collectAsState
+import androidx.compose.ui.Alignment
+import androidx.compose.foundation.clickable
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedButton
@@ -57,8 +61,10 @@ fun BackupSection(importOnly: Boolean = false) {
     var sealed by remember { mutableStateOf<String?>(null) }
     /** Backup text picked for import, waiting for its passphrase. */
     var loaded by remember { mutableStateOf<String?>(null) }
+    var shareDevice by remember { mutableStateOf(false) }
+    val mullvad by c.vpn.mullvad.collectAsState(initial = null)
 
-    fun reset() { dialog = null; pass = ""; pass2 = ""; busy = false; sealed = null; loaded = null }
+    fun reset() { dialog = null; pass = ""; pass2 = ""; busy = false; sealed = null; loaded = null; shareDevice = false }
 
     fun gotText(text: String?) {
         when {
@@ -70,7 +76,7 @@ fun BackupSection(importOnly: Boolean = false) {
 
     /** Encrypts once per dialog; PBKDF2 is deliberately slow. */
     suspend fun sealedText(): String = sealed ?: withContext(Dispatchers.Default) {
-        BackupCrypto.seal(c.exportBackup(), pass.toCharArray())
+        BackupCrypto.seal(c.exportBackup(shareDevice), pass.toCharArray())
     }.also { sealed = it }
 
     fun decrypt() {
@@ -104,7 +110,8 @@ fun BackupSection(importOnly: Boolean = false) {
     } else Text(
         "Copy this setup to another Android profile or phone: accounts, VPN profiles, Mullvad account, API keys and " +
             "settings, encrypted with a passphrase you choose. Android keeps profiles apart, so move the file with Share " +
-            "(a messenger, Drive, email to yourself), then Import on the other side. Each profile keeps its own Mullvad device.",
+            "(a messenger, Drive, email to yourself), then Import on the other side. Each profile registers its own Mullvad " +
+            "device unless you share this one when exporting.",
         style = MaterialTheme.typography.bodySmall,
     )
     if (!importOnly) Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(8.dp)) {
@@ -125,6 +132,17 @@ fun BackupSection(importOnly: Boolean = false) {
                             style = MaterialTheme.typography.bodySmall)
                         PassField("Passphrase (8+ characters)", pass) { pass = it; sealed = null }
                         PassField("Repeat passphrase", pass2) { pass2 = it }
+                        mullvad?.device?.let { d ->
+                            Row(verticalAlignment = Alignment.CenterVertically, modifier = Modifier.clickable { shareDevice = !shareDevice; sealed = null }) {
+                                Checkbox(shareDevice, { shareDevice = it; sealed = null })
+                                Text("Share Mullvad device “${d.name}”", style = MaterialTheme.typography.bodyMedium)
+                            }
+                            Text(
+                                if (shareDevice) "The other side uses this device instead of taking another of your 5 Mullvad slots. Never connect both at the same time: they'd keep taking the VPN from each other."
+                                else "Off: the other side registers its own Mullvad device.",
+                                style = MaterialTheme.typography.bodySmall,
+                            )
+                        }
                         if (busy) CircularProgressIndicator()
                         Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                             TextButton(enabled = valid && !busy, onClick = { saveFile.launch("resproxy-backup.txt") }) { Text("Save file") }
@@ -189,7 +207,7 @@ fun BackupSection(importOnly: Boolean = false) {
                         "• Accounts: ${b.accounts.joinToString { it.provider.label }.ifEmpty { "none" }}\n" +
                         "• Location: ${b.settings.provider.label}, ${b.settings.location.label}\n" +
                         "• VPN profiles: ${b.vpnProfiles.joinToString { it.name }.ifEmpty { b.chain?.name ?: "none" }}\n" +
-                        "• Mullvad: ${if (b.mullvadNumber.isNotEmpty()) "yes" else "no"}\n\n" +
+                        "• Mullvad: ${when { b.mullvadDevice != null -> "yes, shares device “${b.mullvadDevice.name}”"; b.mullvadNumber.isNotEmpty() -> "yes"; else -> "no" }}\n\n" +
                         "This replaces all accounts and settings here and disconnects."
                 )
             },

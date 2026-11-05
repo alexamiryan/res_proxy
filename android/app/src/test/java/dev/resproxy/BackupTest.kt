@@ -45,4 +45,12 @@ class BackupTest {
         val p = "pw123456".toCharArray()
         assertTrue(BackupCrypto.seal(payload, p) != BackupCrypto.seal(payload, p))
     }
+
+    @Test fun sharedMullvadDeviceRoundTrips() {
+        val d = dev.resproxy.data.MullvadDevice("d1", "Calm Fox", "priv", "pub", "10.1.2.2/32", "")
+        val p = payload.copy(mullvadNumber = "1234567890123456", mullvadDevice = d)
+        assertEquals(d, BackupCrypto.open(BackupCrypto.seal(p, "pw123456".toCharArray()), "pw123456".toCharArray()).mullvadDevice)
+        // Default: no device in the backup.
+        assertEquals(null, payload.mullvadDevice)
+    }
 }

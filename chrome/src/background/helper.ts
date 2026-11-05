@@ -79,8 +79,9 @@ export class Helper {
     p?.disconnect()
   }
 
-  async hello(): Promise<{ version: string; platform: string }> {
-    const r = await this.call('hello', {}, 5000)
+  /** Generous timeout: the first start of a new helper binary can wait on an antivirus scan. */
+  async hello(timeoutMs = 20_000): Promise<{ version: string; platform: string }> {
+    const r = await this.call('hello', {}, timeoutMs)
     return { version: String(r.version), platform: String(r.platform) }
   }
 
@@ -121,7 +122,8 @@ export async function probeHelper(): Promise<{ installed: boolean; version?: str
     return { installed: true, ...info }
   } catch (e) {
     const msg = (e as Error).message
-    return { installed: false, error: /not found|Specified native messaging host/i.test(msg) ? undefined : msg }
+    // "Specified native messaging host not found." = not registered; anything else is worth showing as is.
+    return { installed: false, error: /native messaging host not found/i.test(msg) ? undefined : msg }
   } finally {
     h.disconnect()
   }

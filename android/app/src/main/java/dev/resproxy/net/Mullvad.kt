@@ -41,6 +41,9 @@ data class MullvadRelay(
     val countryCode get() = location.substringBefore('-')
 }
 
+/** A device (WireGuard key) registered on the account, as listed by Mullvad. */
+data class MullvadDeviceInfo(val id: String, val name: String, val created: String)
+
 @Serializable
 private data class RelayCache(val fetchedAt: Long, val relays: List<MullvadRelay>)
 
@@ -77,6 +80,12 @@ class MullvadClient(private val cacheFile: File) {
         }.getOrNull().orEmpty()
         val device = existing?.takeIf { deviceExists(token, it.id) } ?: registerDevice(token)
         MullvadAccount(n, expiry, device)
+    }
+
+    /** Every device on the account (each app install / Android profile / browser registers its own). */
+    suspend fun devices(number: String): List<MullvadDeviceInfo> = withContext(Dispatchers.IO) {
+        val token = token(normalize(number))
+        parseDevices(call(authed("$API/accounts/v1/devices", token).build()))
     }
 
     suspend fun removeDevice(number: String, deviceId: String) = withContext(Dispatchers.IO) {
@@ -160,6 +169,12 @@ class MullvadClient(private val cacheFile: File) {
                 )
             }
         }
+
+        internal fun parseDevices(body: String): List<MullvadDeviceInfo> =
+            (json.parseToJsonElement(body) as? JsonArray).orEmpty().mapNotNull { e ->
+                val o = e as? JsonObject ?: return@mapNotNull null
+                MullvadDeviceInfo(o.str("id") ?: return@mapNotNull null, o.str("name").orEmpty(), o.str("created").orEmpty())
+            }.sortedBy { it.created }
 
         /** [code] is a hostname, a `country-city` location, or a country code; picks by weight. */
         fun pick(code: String, relays: List<MullvadRelay>): MullvadRelay? {

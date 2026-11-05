@@ -5,7 +5,7 @@ import { open, seal, normPayload, WrongPassphraseError, looksLikeBackup } from '
 import { buildEndpoint, parseProxyLine, type Profile } from '../src/core/presets'
 import { defaultSettings, normSettings, restoreSession, withSession, sessionKey, MAX_LIFETIME_MINUTES } from '../src/core/models'
 import { aggregate, interpretDnsbl, Parsers, dnsblName, parseEcho } from '../src/core/reputation'
-import { parseWireGuard, parseRelays, pickRelay, relayLabel, wgQuick } from '../src/core/vpn'
+import { parseWireGuard, parseRelays, pickRelay, relayLabel, wgQuick, parseDevices } from '../src/core/vpn'
 import { buildPac, evalPac, normalizeSite } from '../src/core/pac'
 import { parseGeonode, parseIpRoyal, geonodeAuth, builtInCatalog } from '../src/core/locations'
 
@@ -34,6 +34,13 @@ describe('backup (shared vectors)', () => {
 
   it('opens the committed Chrome vector', async () => {
     expect(await open(readFileSync(join(VEC, 'backup-chrome.txt'), 'utf8'), PASS)).toEqual(normPayload(payloadJson()))
+  })
+
+  it('carries a shared Mullvad device only when present', async () => {
+    const device = { id: 'd1', name: 'Calm Fox', privateKey: 'yAnz5TF+lXXJte14tji3zlMNq+hd2rYUIgJBgB3fBmk=', publicKey: 'pk', ipv4: '10.1.2.2/32', ipv6: '' }
+    const p = { ...normPayload(payloadJson()), mullvadDevice: device }
+    expect((await open(await seal(p, PASS), PASS)).mullvadDevice).toEqual(device)
+    expect(normPayload({ mullvadDevice: { id: 'x' } }).mullvadDevice).toBeNull()
   })
 
   it('rejects a wrong passphrase', async () => {
@@ -138,6 +145,11 @@ describe('vpn', () => {
     expect(cfg.dns).toEqual(['10.2.0.1'])
     expect(cfg.peers[0]).toMatchObject({ endpointHost: 'nl.example.net', endpointPort: 51820, keepalive: 25 })
     expect(() => parseWireGuard('[Interface]\nPrivateKey = short\n')).toThrow('Invalid WireGuard key')
+  })
+
+  it('lists Mullvad devices (shared vector)', () => {
+    const v = JSON.parse(readFileSync(join(VEC, 'mullvad-devices.json'), 'utf8'))
+    expect(parseDevices(JSON.stringify(v.body))).toEqual(v.devices)
   })
 
   it('parses and picks Mullvad relays', () => {

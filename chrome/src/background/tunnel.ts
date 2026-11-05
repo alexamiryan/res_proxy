@@ -398,6 +398,19 @@ export class Tunnel {
     }
   }
 
+  /** Devices on the account; [number] defaults to the saved account. */
+  async mullvadDevices(number?: string) {
+    const n = number || (await loadSecrets()).mullvad?.number
+    if (!n) throw new Error('Add your Mullvad account number first')
+    return this.mullvad.devices(n)
+  }
+
+  async removeMullvadDevice(id: string, number?: string) {
+    const n = number || (await loadSecrets()).mullvad?.number
+    if (!n) throw new Error('Add your Mullvad account number first')
+    await this.mullvad.removeDevice(n, id)
+  }
+
   async removeMullvad() {
     const m = (await loadSecrets()).mullvad
     if (m?.device?.id) await this.mullvad.removeDevice(m.number, m.device.id).catch((e) => log.warn('remove device', e))

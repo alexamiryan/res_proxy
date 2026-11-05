@@ -50,7 +50,7 @@ export interface UiState {
   apiKeys: ApiKeys
   vpnProfiles: VpnProfile[]
   /** Without the device private key. */
-  mullvad: { number: string; expiry: string; deviceName: string } | null
+  mullvad: { number: string; expiry: string; deviceName: string; deviceId: string } | null
   prefs: LocalPrefs
   usage: Partial<Record<Provider, UsageTotals>>
   helper: HelperInfo
@@ -74,18 +74,24 @@ export type Request =
   | { type: 'setMullvad'; number: string }
   | { type: 'mullvadLogin' }
   | { type: 'removeMullvad' }
+  | { type: 'mullvadDevices'; number?: string }
+  | { type: 'removeMullvadDevice'; id: string; number?: string }
   | { type: 'mullvadRelays'; force?: boolean }
   | { type: 'catalog'; provider: Provider; force?: boolean }
   | { type: 'latency' }
   | { type: 'savePrefs'; prefs: Partial<LocalPrefs> }
   | { type: 'resetUsage' }
   | { type: 'helperInfo' }
-  | { type: 'exportBackup'; passphrase: string }
+  | { type: 'exportBackup'; passphrase: string; shareMullvadDevice?: boolean }
   | { type: 'openBackup'; text: string; passphrase: string }
   | { type: 'importBackup'; text: string; passphrase: string }
 
 export type Response<T = unknown> = { ok: true; value: T } | { ok: false; error: string }
 
-export interface BackupPreview { createdAt: number; accounts: number; vpnProfiles: number; mullvad: boolean; provider: Provider }
+export interface BackupPreview {
+  createdAt: number; accounts: number; vpnProfiles: number; mullvad: boolean; provider: Provider
+  /** Name of the Mullvad device the backup shares, if any. */
+  mullvadDevice?: string
+}
 
 export type { MullvadRelay, LocationCatalog, MullvadAccount }

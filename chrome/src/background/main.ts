@@ -16,7 +16,14 @@ import { log } from './log'
 const tunnel = new Tunnel()
 /** Last known helper state for the UI; probing starts the helper process briefly, so it isn't done per popup. */
 let helperInfo: HelperInfo = { installed: false }
-const refreshHelper = () => probeHelper().then((h) => { helperInfo = h; return h })
+let helperCheckedAt = 0
+let helperCheck: Promise<HelperInfo> | null = null
+const refreshHelper = () => (helperCheck ??= probeHelper().then((h) => {
+  helperInfo = h
+  helperCheckedAt = Date.now()
+  if (!h.installed) log.warn('helper check:', h.error ?? 'not registered')
+  return h
+}).finally(() => { helperCheck = null }))
 void refreshHelper()
 
 // ---------- lifecycle ----------
@@ -103,7 +110,7 @@ async function catalog(provider: Provider, force: boolean): Promise<LocationCata
 
 // ---------- backup ----------
 
-async function exportBackup(passphrase: string): Promise<string> {
+async function exportBackup(passphrase: string, shareMullvadDevice: boolean): Promise<string> {
   if (passphrase.length < 8) throw new Error('Use a passphrase of at least 8 characters')
   const s = await loadSettings()
   const secrets = await loadSecrets()
@@ -118,6 +125,7 @@ async function exportBackup(passphrase: string): Promise<string> {
     vpnProfiles: secrets.vpnProfiles,
     // The Mullvad device key stays per install; the other side registers its own.
     mullvadNumber: secrets.mullvad?.number ?? '',
+    mullvadDevice: shareMullvadDevice ? secrets.mullvad?.device ?? null : null,
   }, passphrase)
 }
 
@@ -127,12 +135,20 @@ async function importBackup(text: string, passphrase: string) {
   const legacy = b.vpnProfiles.length === 0 && b.chain?.config.trim()
     ? { id: Math.random().toString(36).slice(2, 10), name: b.chain.name, config: b.chain.config } : null
   const mullvadNumber = normMv(b.mullvadNumber)
+  const shared = mullvadNumber ? b.mullvadDevice : null
+  // Adopting a shared device: this install's own one (if different) is removed to free its slot.
+  const own = (await loadSecrets()).mullvad
+  if (shared && own?.number === mullvadNumber && own.device && own.device.id !== shared.id) {
+    await tunnel.removeMullvadDevice(own.device.id, mullvadNumber).catch((e) => log.warn('remove old Mullvad device', e))
+  }
   await updateSecrets((x) => ({
     accounts: Object.fromEntries(b.accounts.map((a) => [a.provider, a])),
     apiKeys: b.apiKeys,
     vpnProfiles: b.vpnProfiles.length ? b.vpnProfiles : legacy ? [legacy] : [],
     // Keeps this install's Mullvad device when the number is unchanged.
-    mullvad: !mullvadNumber ? null : x.mullvad?.number === mullvadNumber ? x.mullvad : { number: mullvadNumber, expiry: '', device: null },
+    mullvad: !mullvadNumber ? null
+      : shared ? { number: mullvadNumber, expiry: x.mullvad?.number === mullvadNumber ? x.mullvad.expiry : '', device: shared }
+        : x.mullvad?.number === mullvadNumber ? x.mullvad : { number: mullvadNumber, expiry: '', device: null },
   }))
   await updateSettings((cur) => {
     const exit = legacy && !b.settings.vpnExit ? vpnExitImported(legacy.id) : b.settings.vpnExit
@@ -145,6 +161,8 @@ async function importBackup(text: string, passphrase: string) {
 // ---------- state for the UI ----------
 
 async function uiState(): Promise<UiState> {
+  // A failed check isn't final (installed later, or the first start was slow): re-check when the UI opens.
+  if (!helperInfo.installed && tunnel.status.via !== 'helper' && Date.now() - helperCheckedAt > 10_000) await refreshHelper()
   const [settings, secrets, prefs, { usage }] = await Promise.all([loadSettings(), loadSecrets(), loadPrefs(), chrome.storage.local.get('usage')])
   const m = secrets.mullvad
   return {
@@ -152,7 +170,7 @@ async function uiState(): Promise<UiState> {
     accounts: secrets.accounts,
     apiKeys: secrets.apiKeys,
     vpnProfiles: secrets.vpnProfiles,
-    mullvad: m ? { number: m.number, expiry: m.expiry, deviceName: m.device?.name ?? '' } : null,
+    mullvad: m ? { number: m.number, expiry: m.expiry, deviceName: m.device?.name ?? '', deviceId: m.device?.id ?? '' } : null,
     usage: (usage ?? {}) as UiState['usage'],
     helper: tunnel.status.via === 'helper' ? { ...helperInfo, installed: true } : helperInfo,
     extensionId: chrome.runtime.id,
@@ -202,18 +220,20 @@ async function handle(req: Request): Promise<unknown> {
     }
     case 'mullvadLogin': { const a = await tunnel.mullvadLogin(); return { expiry: a.expiry, deviceName: a.device?.name ?? '' } }
     case 'removeMullvad': await tunnel.removeMullvad(); return null
+    case 'mullvadDevices': return tunnel.mullvadDevices(req.number)
+    case 'removeMullvadDevice': await tunnel.removeMullvadDevice(req.id, req.number); return null
     case 'mullvadRelays': return tunnel.mullvadRelays(!!req.force)
     case 'catalog': return catalog(req.provider, !!req.force)
     case 'latency': return tunnel.latency()
     case 'savePrefs': await savePrefs(req.prefs); return null
     case 'resetUsage': await chrome.storage.local.remove('usage'); return null
     case 'helperInfo': return refreshHelper()
-    case 'exportBackup': return exportBackup(req.passphrase)
+    case 'exportBackup': return exportBackup(req.passphrase, !!req.shareMullvadDevice)
     case 'openBackup': {
       const b = await openBackup(req.text, req.passphrase)
       const preview: BackupPreview = {
         createdAt: b.createdAt, accounts: b.accounts.length, vpnProfiles: b.vpnProfiles.length + (b.chain?.config ? 1 : 0),
-        mullvad: !!b.mullvadNumber, provider: b.settings.provider,
+        mullvad: !!b.mullvadNumber, provider: b.settings.provider, mullvadDevice: b.mullvadDevice?.name || undefined,
       }
       return preview
     }

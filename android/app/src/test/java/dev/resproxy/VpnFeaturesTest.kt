@@ -98,4 +98,19 @@ class VpnFeaturesTest {
         assertNull(VpnExit.parse(""))
         assertEquals("1234567890123456", MullvadClient.normalize("1234 5678 9012 3456"))
     }
+
+    @Test fun parsesMullvadDevicesFromSharedVector() {
+        val dir = generateSequence(java.io.File("").absoluteFile) { it.parentFile }.map { java.io.File(it, "shared/test-vectors") }.first { it.isDirectory }
+        val root = kotlinx.serialization.json.Json.parseToJsonElement(java.io.File(dir, "mullvad-devices.json").readText()) as kotlinx.serialization.json.JsonObject
+        val got = MullvadClient.parseDevices(root["body"].toString())
+        val want = (root["devices"] as kotlinx.serialization.json.JsonArray).map {
+            val o = it as kotlinx.serialization.json.JsonObject
+            dev.resproxy.net.MullvadDeviceInfo(
+                (o["id"] as kotlinx.serialization.json.JsonPrimitive).content,
+                (o["name"] as kotlinx.serialization.json.JsonPrimitive).content,
+                (o["created"] as kotlinx.serialization.json.JsonPrimitive).content,
+            )
+        }
+        assertEquals(want, got)
+    }
 }
