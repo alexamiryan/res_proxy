@@ -80,7 +80,7 @@ try {
   await send({ type: 'updateSettings', patch: {
     connection: { ...st0.settings.connection, protocol: 'HTTP', sticky: true, gateways: { IPROYAL: { host: 'gw.proxy.test', port: 18080 } } },
     location: { country: '', countryName: '', state: '', stateName: '', city: '', cityName: '' },
-    chainEnabled: false, recheckOnConnect: true, rotateThreshold: 'BAD', autoRotate: true, maxRotations: 2, bypassLan: true,
+    chainEnabled: false, recheckOnConnect: true, rotateThreshold: 'BAD', autoRotate: true, bypassLan: true,
   } })
   await send({ type: 'savePrefs', prefs: { useHelper: false } })
   await send({ type: 'connect' })
@@ -107,13 +107,13 @@ try {
   check(after.length > 0 && !after.some((l) => l.includes(`_session-${oldSession}`)), 'old session credentials are not sent after New IP')
 
   // ---- gate: an IP that can never pass keeps tabs blocked ----
-  await send({ type: 'updateSettings', patch: { rotateThreshold: 'CLEAN', maxRotations: 1 } })
+  await send({ type: 'updateSettings', patch: { rotateThreshold: 'CLEAN' } })
   await send({ type: 'recheck' })
   s = await waitFor((x) => !x.checking && x.trafficBlocked && /traffic blocked/i.test(x.message ?? ''), 'blocked after failed check')
   await tab.goto('https://example.org/').catch(() => undefined)
   check(tab.url().startsWith(`chrome-extension://${id}/blocked.html`), `blocked tab shows the waiting page (${tab.url()})`)
   check(/blocked/i.test(s.message ?? ''), `status says why (${s.message})`)
-  await send({ type: 'updateSettings', patch: { rotateThreshold: 'BAD', maxRotations: 2 } })
+  await send({ type: 'updateSettings', patch: { rotateThreshold: 'BAD' } })
   await send({ type: 'rotate' })
   s = await waitFor((x) => x.phase === 'CONNECTED' && !x.checking && !x.trafficBlocked, 'unblocked after New IP')
   await tab.waitForURL(/example\.org/, { timeout: 15_000 }).catch(() => undefined)
@@ -127,6 +127,15 @@ try {
   await send({ type: 'saveAccount', account: { provider: 'IPROYAL', username: 'u', password: 'p', apiToken: '', apiLogin: '', apiPassword: '' } })
   s = await waitFor((x) => x.phase === 'CONNECTED' && !x.checking && !x.trafficBlocked, 'recovered after fixing the password', 90_000)
   check(true, 'recovers when the password is fixed')
+
+  // ---- the sticky session's exit node dies: the proxy logs us in but reaches nothing → new session ----
+  await send({ type: 'updateSettings', patch: { healthIntervalSec: 10 } })
+  const deadSession = s.sessionId
+  proxy.stdin.write(`kill _session-${deadSession}\n`)
+  s = await waitFor((x) => x.sessionId !== deadSession && x.phase === 'CONNECTED' && !x.checking && !x.trafficBlocked, 'new session after the exit node died', 90_000)
+  check(true, `dead exit node replaced: session ${deadSession} → ${s.sessionId}`)
+  await tab.goto(`${SITE}?d=${Date.now()}`)
+  check((await tab.title()).includes('Example'), 'tab loads through the new session')
 
   await send({ type: 'disconnect' })
   s = await waitFor((x) => x.phase === 'DISCONNECTED', 'disconnect')

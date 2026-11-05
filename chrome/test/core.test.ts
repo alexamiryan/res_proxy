@@ -4,7 +4,7 @@ import { join } from 'node:path'
 import { open, seal, normPayload, WrongPassphraseError, looksLikeBackup } from '../src/core/backup'
 import { buildEndpoint, parseProxyLine, type Profile } from '../src/core/presets'
 import { defaultSettings, normSettings, restoreSession, withSession, sessionKey, MAX_LIFETIME_MINUTES } from '../src/core/models'
-import { aggregate, interpretDnsbl, Parsers, dnsblName, parseEcho } from '../src/core/reputation'
+import { aggregate, interpretDnsbl, Parsers, dnsblName, parseEcho, isDeadExitStatus } from '../src/core/reputation'
 import { parseWireGuard, parseRelays, pickRelay, relayLabel, wgQuick, parseDevices } from '../src/core/vpn'
 import { buildPac, evalPac, normalizeSite } from '../src/core/pac'
 import { parseGeonode, parseIpRoyal, geonodeAuth, builtInCatalog } from '../src/core/locations'
@@ -212,5 +212,12 @@ describe('locations', () => {
     const b = builtInCatalog()
     expect(b.countries.find((c) => c.code === 'us')?.states?.length).toBe(51)
     expect(geonodeAuth({ provider: 'GEONODE', username: 'geonode_abc-type-residential', password: 'p', apiToken: '', apiLogin: '', apiPassword: '' })).toEqual(['geonode_abc', 'p'])
+  })
+})
+
+describe('dead exit node', () => {
+  it('treats gateway errors from the proxy as a dead sticky exit node', () => {
+    expect([502, 503, 504].every(isDeadExitStatus)).toBe(true)
+    expect([200, 204, 403, 407, 500].some(isDeadExitStatus)).toBe(false)
   })
 })

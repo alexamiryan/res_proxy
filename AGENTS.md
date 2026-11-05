@@ -248,7 +248,10 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 - **Sticky exit nodes die.** The proxy still logs us in but answers every CONNECT with SOCKS "host unreachable"
   (or HTTP 502/503/504). Repairs and reconnects reuse the remembered session, so the tunnel sat in `PROXY_DOWN`
   forever (seen with Geonode on one Android user while others were fine). Android: two such health probes in a
-  row (`exitNodeDead` in `net/Upstream.kt`) switch to a new session. Chrome and iOS don't do this yet.
+  row (`exitNodeDead` in `net/Upstream.kt`) switch to a new session. Chrome does the same (`deadExitProbes` in
+  `background/tunnel.ts`): direct mode sees the gateway's 502–504 on the probe, helper mode a reply with code
+  `refused` (the helper tags its `refusedError` that way, `errorCode` in `main.go`). iOS doesn't do this yet.
+  `cmd/testproxy` simulates it: a stdin line `kill <text>` kills sessions whose password contains it (used by e2e).
 - IPRoyal SOCKS5 has no UDP, so apps fall back to TCP. The default session lifetime is the maximum
   (`MAX_LIFETIME_MINUTES`, 7 days, IPRoyal's limit). The Geonode preset caps it at 1440 min. Schema 3
   migrated the old 1440 default to 7 days.

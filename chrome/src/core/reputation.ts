@@ -339,6 +339,12 @@ export function sourceRequests(ip: string, k: ApiKeys): SourceRequest[] {
 
 export const IP_ECHO = ['https://api.ipify.org?format=json', 'https://ifconfig.me/ip', 'https://icanhazip.com']
 export const PROBE_URL = 'http://connectivitycheck.gstatic.com/generate_204'
+
+/**
+ * Probe answered by the proxy itself with a gateway error: it took our login but couldn't reach the target. With a
+ * sticky session that means the exit node behind it went offline, and that session never recovers.
+ */
+export const isDeadExitStatus = (status: number): boolean => status === 502 || status === 503 || status === 504
 export const REPORT_CACHE_MS = 3600_000
 
 /** Body of an IP echo service → the IP, or '' when it isn't one. */

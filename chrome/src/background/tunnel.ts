@@ -17,7 +17,7 @@ import {
 import { type Endpoint, buildEndpoint, newSessionId, profileFrom } from '../core/presets'
 import { buildPac } from '../core/pac'
 import {
-  type ReputationReport, type SourceResult, DNSBL_ZONES, IP_ECHO, PROBE_URL, REPORT_CACHE_MS, aggregate, dnsblName,
+  type ReputationReport, type SourceResult, DNSBL_ZONES, IP_ECHO, PROBE_URL, isDeadExitStatus, REPORT_CACHE_MS, aggregate, dnsblName,
   failed, interpretDnsbl, parseEcho, sourceRequests,
 } from '../core/reputation'
 import { MULLVAD_DNS, MullvadClient, parseWireGuard, pickRelay, relayLabel, wgQuick, type MullvadRelay } from '../core/vpn'
@@ -31,10 +31,14 @@ const TICK_MS = 5000
 /** Rotations in a row without a pause; after that one every ROTATION_PAUSE_MS (under the worker's 30 s idle limit). */
 const QUICK_ROTATIONS = 10
 const ROTATION_PAUSE_MS = 20_000
+/** Probes in a row where the proxy answered but couldn't reach the target: the sticky exit node is gone. */
+const DEAD_EXIT_PROBES = 2
 /** PAC target while nothing is listening yet: every proxied request fails, nothing goes direct. */
 const BLACKHOLE = 'PROXY 127.0.0.1:9'
 
 class ProxyAuthError extends Error {}
+/** The proxy works but couldn't reach the probe target: the sticky session's exit node is gone. */
+class ExitNodeError extends Error {}
 
 /** Survives service-worker restarts (chrome.storage.session lives as long as the browser session). */
 interface Runtime {
@@ -78,6 +82,8 @@ export class Tunnel {
   private authRejected = false
   // health
   private fails = 0
+  /** Probes in a row that failed with a dead exit node. */
+  private deadExitProbes = 0
   private lastProbe = 0
   private lastPing = 0
   private lastRepairAt = 0
@@ -644,9 +650,11 @@ export class Tunnel {
     try {
       const r = await fetchTimeout(PROBE_URL, 15_000)
       if (r.status === 407) throw new ProxyAuthError()
+      if (isDeadExitStatus(r.status)) throw new ExitNodeError(`Proxy couldn't reach the probe site (${r.status})`)
       if (r.status !== 204 && !r.ok) throw new Error(`Unexpected response through proxy: ${r.status}`)
     } catch (e) {
       if (this.authRejected || e instanceof ProxyAuthError) throw new ProxyAuthError()
+      if (e instanceof ExitNodeError) throw e
       throw new Error(`Proxy unreachable (${(e as Error).message})`)
     }
     return Math.round(performance.now() - start)
@@ -811,7 +819,7 @@ export class Tunnel {
   // ---------- health ----------
 
   private resetHealth() {
-    this.fails = 0; this.lastProbe = Date.now(); this.lastPing = 0; this.failedRepairs = 0
+    this.fails = 0; this.deadExitProbes = 0; this.lastProbe = Date.now(); this.lastPing = 0; this.failedRepairs = 0
     this.seenOk = 0; this.seenFail = 0; this.failingSince = 0; this.failsInStreak = 0
     this.lastCounters = null; this.directFailures = []; this.directOk = 0
   }
@@ -902,7 +910,7 @@ export class Tunnel {
       this.lastProbe = now
       try {
         const ms = await this.probe()
-        this.fails = 0
+        this.fails = 0; this.deadExitProbes = 0
         if (this.rt.status.phase === 'PROXY_DOWN') {
           this.update((x) => ({ ...x, phase: 'CONNECTED', message: 'Proxy reachable again' }))
           if ((!this.rt.status.exitIp || this.rt.status.trafficBlocked) && !this.checkRunning) this.launchCheck(false)
@@ -911,6 +919,17 @@ export class Tunnel {
         if (suspect) { this.failingSince = 0; this.failsInStreak = 0; await this.repair(suspect) }
       } catch (e) {
         this.fails++
+        const dead = e instanceof ExitNodeError || (e instanceof HelperError && e.code === 'refused')
+        this.deadExitProbes = dead ? this.deadExitProbes + 1 : 0
+        if (this.deadExitProbes >= DEAD_EXIT_PROBES && s.connection.sticky) {
+          // Repairs and reconnects reuse the same session, so they'd never get past a dead exit node.
+          log.info(`exit node not answering (${(e as Error).message}), switching to a new session`)
+          this.deadExitProbes = 0; this.fails = 0
+          await this.switchSession(newSessionId())
+          this.update((x) => ({ ...x, message: 'Exit IP stopped working — switched to a new one' }))
+          this.launchCheck(false)
+          return
+        }
         const auth = e instanceof ProxyAuthError || (e instanceof HelperError && e.code === 'auth')
         if (this.fails >= 2 || auth || down || suspect) {
           if (!(await this.onProxyFailure(e))) return

@@ -23,6 +23,26 @@ type Proxy struct {
 	ln             net.Listener
 	mu             sync.Mutex
 	used           []string
+	dead           []string
+}
+
+// KillSession makes every login whose password contains s act like a sticky session whose exit node went offline:
+// the login works, but targets can't be reached (HTTP 502, SOCKS5 reply 4 "host unreachable").
+func (p *Proxy) KillSession(s string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.dead = append(p.dead, s)
+}
+
+func (p *Proxy) isDead(pass string) bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	for _, d := range p.dead {
+		if strings.Contains(pass, d) {
+			return true
+		}
+	}
+	return false
 }
 
 // Used returns "user:password" of every authenticated connection, in order.
@@ -85,6 +105,11 @@ func (p *Proxy) http(c net.Conn) {
 			io.Copy(io.Discard, req.Body)
 			io.WriteString(c, "HTTP/1.1 407 Proxy Authentication Required\r\nProxy-Authenticate: Basic realm=\"test\"\r\nContent-Length: 0\r\n\r\n")
 			continue
+		}
+		if p.isDead(pass) {
+			io.Copy(io.Discard, req.Body)
+			io.WriteString(c, "HTTP/1.1 502 Bad Gateway\r\nContent-Length: 0\r\n\r\n")
+			return
 		}
 		if req.Method == http.MethodConnect {
 			t, err := net.Dial("tcp", req.Host)
@@ -161,6 +186,10 @@ func (p *Proxy) socks(c net.Conn) {
 	var pb [2]byte
 	io.ReadFull(c, pb[:])
 	target := net.JoinHostPort(host, strconv.Itoa(int(binary.BigEndian.Uint16(pb[:]))))
+	if p.isDead(string(pw)) {
+		c.Write([]byte{5, 4, 0, 1, 0, 0, 0, 0, 0, 0})
+		return
+	}
 	t, err := net.Dial("tcp", target)
 	if err != nil {
 		c.Write([]byte{5, 5, 0, 1, 0, 0, 0, 0, 0, 0})

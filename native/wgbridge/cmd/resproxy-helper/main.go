@@ -118,6 +118,20 @@ func (e *codedError) Unwrap() error { return e.err }
 
 func withCode(code string, err error) error { return &codedError{code, err} }
 
+// errorCode is the reply's "code": an explicit withCode, or "refused" when the proxy answered but couldn't reach the
+// target. For the probe that means a sticky session's exit node went offline; the extension / iOS then start a new one.
+func errorCode(err error) string {
+	var ce *codedError
+	if errors.As(err, &ce) {
+		return ce.code
+	}
+	var re *refusedError
+	if errors.As(err, &re) {
+		return "refused"
+	}
+	return ""
+}
+
 type server struct {
 	out   io.Writer
 	outMu sync.Mutex
@@ -167,12 +181,7 @@ func (s *server) handle(req request) { s.reply(s.call(req)) }
 func (s *server) call(req request) map[string]any {
 	res, err := s.dispatch(req)
 	if err != nil {
-		code := ""
-		var ce *codedError
-		if errors.As(err, &ce) {
-			code = ce.code
-		}
-		return map[string]any{"id": req.ID, "ok": false, "error": err.Error(), "code": code}
+		return map[string]any{"id": req.ID, "ok": false, "error": err.Error(), "code": errorCode(err)}
 	}
 	if res == nil {
 		res = map[string]any{}
