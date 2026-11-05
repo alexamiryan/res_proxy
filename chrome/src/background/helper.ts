@@ -48,7 +48,7 @@ export class Helper {
       else p.reject(new HelperError(String(msg.error ?? 'Helper error'), msg.code as string | undefined))
     })
     port.onDisconnect.addListener(() => {
-      const reason = chrome.runtime.lastError?.message ?? 'Helper exited'
+      const reason = chrome.runtime.lastError?.message || 'Helper exited without an answer'
       this.port = null
       for (const p of this.pending.values()) { clearTimeout(p.timer); p.reject(new HelperError(reason, 'gone')) }
       this.pending.clear()
@@ -123,7 +123,7 @@ export async function probeHelper(): Promise<{ installed: boolean; version?: str
   } catch (e) {
     // Keep the browser's exact words: "…host not found" (not registered for this browser), "…forbidden"
     // (extension ID not allowed), "Failed to start…" (blocked, e.g. by antivirus), a timeout…
-    return { installed: false, error: (e as Error).message }
+    return { installed: false, error: (e as Error)?.message || String(e) || 'unknown error' }
   } finally {
     h.disconnect()
   }

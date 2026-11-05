@@ -20,6 +20,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"sync"
@@ -72,7 +73,33 @@ func main() {
 		fmt.Println("Run `resproxy-helper install` once; Chrome starts the helper by itself after that.")
 		return
 	}
+	startLog(args)
 	serve(os.Stdin, os.Stdout)
+	log.Printf("stdin closed, exiting")
+}
+
+// startLog mirrors log output to a small file next to the user's app data, so "is the browser starting the
+// helper at all?" can be answered: %LOCALAPPDATA%\ResProxy\helper.log (or ~/.cache/resproxy/helper.log).
+func startLog(args []string) {
+	dir, err := os.UserCacheDir()
+	if err != nil {
+		return
+	}
+	dir = filepath.Join(dir, "ResProxy")
+	if os.MkdirAll(dir, 0o755) != nil {
+		return
+	}
+	path := filepath.Join(dir, "helper.log")
+	if fi, err := os.Stat(path); err == nil && fi.Size() > 256<<10 {
+		os.Rename(path, path+".old")
+	}
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		return
+	}
+	log.SetOutput(io.MultiWriter(os.Stderr, f))
+	log.SetFlags(log.LstdFlags)
+	log.Printf("started %s by %v (pid %d)", Version, args, os.Getpid())
 }
 
 type request struct {

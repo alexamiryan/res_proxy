@@ -243,6 +243,11 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
   the loaded build.
 - The helper page shows the browser's exact native-messaging error ("host not found" = not registered for this
   browser, "forbidden" = extension ID not in `allowed_origins`, "failed to start" = binary missing/blocked).
+  A Brave that was already running when the helper got registered kept answering "host not found" (a fresh Brave
+  found it): restart the browser after `resproxy-helper install`. The helper logs every start to
+  `%LOCALAPPDATA%/ResProxy/helper.log` (`os.UserCacheDir()/ResProxy`), which tells whether the browser launches it.
+- An unpacked extension's pages load fresh from disk but its service worker keeps running the old code until the
+  extension is reloaded: the sidebar's version (from the manifest the worker loaded) shows which one runs.
 
 ## Conventions
 

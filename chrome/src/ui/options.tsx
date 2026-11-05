@@ -38,7 +38,11 @@ function Options() {
   const [state] = useUiState()
   const [hash, go] = useHash()
   const [helper, setHelper] = useState<HelperInfo | null>(null)
-  useEffect(() => { void send<HelperInfo>({ type: 'helperInfo' }).then(setHelper).catch(() => setHelper({ installed: false })) }, [])
+  const checkHelper = () => {
+    setHelper(null)
+    void send<HelperInfo>({ type: 'helperInfo' }).then(setHelper, (e: Error) => setHelper({ installed: false, error: `extension background: ${e.message}` }))
+  }
+  useEffect(checkHelper, [])
   if (!state) return <div class="loading">Loading…</div>
   const st: UiState = { ...state, helper: helper ?? state.helper }
   const [page, arg] = hash.split('/') as [Page | 'account', string | undefined]
@@ -61,7 +65,7 @@ function Options() {
         {current === 'backup' && <BackupPage state={st} />}
         {current === 'usage' && <UsagePage state={st} />}
         {current === 'advanced' && <AdvancedPage state={st} />}
-        {current === 'helper' && <HelperPage state={st} helper={helper} recheck={() => { setHelper(null); void send<HelperInfo>({ type: 'helperInfo' }).then(setHelper) }} />}
+        {current === 'helper' && <HelperPage state={st} helper={helper} recheck={checkHelper} />}
       </main>
     </div>
   )
@@ -606,7 +610,8 @@ function AdvancedPage({ state }: { state: UiState }) {
 
 /** The browser's native-messaging error, with what to do about it. */
 function helperProblem(error?: string): string {
-  if (!error || /host not found/i.test(error)) return `Not installed — this browser has no helper registered${error ? ` (“${error}”)` : ''}. Run resproxy-helper install.`
+  if (!error) return 'Not installed (no details from the browser)'
+  if (/host not found/i.test(error)) return `Not found (“${error}”). Run resproxy-helper install. Already did? Restart the browser: one that was running during the install may not see it.`
   if (/forbidden/i.test(error)) return `Not allowed for this extension (“${error}”). Run resproxy-helper install again.`
   if (/failed to start|exited/i.test(error)) return `The helper couldn't start (“${error}”). Check that the file exists and isn't blocked by antivirus.`
   return `Not working: ${error}`
