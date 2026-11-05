@@ -608,6 +608,29 @@ function AdvancedPage({ state }: { state: UiState }) {
 
 // ---------- helper ----------
 
+/** Diagnostic: talk to the helper from this page instead of the background worker. */
+function PageProbe() {
+  const [res, setRes] = useState('')
+  const run = () => {
+    setRes('Testing…')
+    const t0 = performance.now()
+    let done = false
+    try {
+      const port = chrome.runtime.connectNative('dev.resproxy.helper')
+      port.onMessage.addListener((m: { version?: string }) => { done = true; setRes(`OK from this page: helper ${m.version} answered in ${Math.round(performance.now() - t0)} ms`); port.disconnect() })
+      port.onDisconnect.addListener(() => { if (!done) setRes(`Failed from this page: ${chrome.runtime.lastError?.message ?? 'disconnected'}`) })
+      port.postMessage({ id: 1, cmd: 'hello' })
+    } catch (e) {
+      setRes(`Failed from this page: ${(e as Error).message}`)
+    }
+  }
+  return (
+    <Row title="Test from this page" sub={res || 'Talks to the helper directly, without the background worker'}>
+      <button class="btn small" onClick={run}>Test</button>
+    </Row>
+  )
+}
+
 /** The browser's native-messaging error, with what to do about it. */
 function helperProblem(error?: string): string {
   if (!error) return 'Not installed (no details from the browser)'
@@ -625,6 +648,7 @@ function HelperPage({ state, helper, recheck }: { state: UiState; helper: Helper
         <Row title="Status" sub={helper === null ? 'Checking…' : helper.installed ? `Installed (${helper.version}, ${helper.platform})` : helperProblem(helper.error)}>
           <button class="btn small" onClick={recheck}>Check again</button>
         </Row>
+        <PageProbe />
         <div class="form">
           <Hint>Chrome extensions can't run WireGuard, log in to SOCKS5 proxies or send pings. The small helper app adds that:</Hint>
           <ul class="hint">
