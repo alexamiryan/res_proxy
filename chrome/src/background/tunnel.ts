@@ -338,7 +338,10 @@ export class Tunnel {
       }
       let acc = secrets.mullvad
       if (!acc) throw new Error('Add your Mullvad account number in Settings → VPN')
-      if (!acc.device) acc = await this.mullvadLogin()
+      if (!acc.device) {
+        if (acc.signedOut) throw new Error('Signed out of Mullvad in this browser. Log in again in Settings → VPN.')
+        acc = await this.mullvadLogin()
+      }
       const relays = await this.mullvadRelays(false).catch((err) => { if (this.relays.length) return this.relays; throw err })
       const relay = pickRelay(e.code, relays)
       if (!relay) throw new Error(`No Mullvad server matches “${e.code}”`)
@@ -396,6 +399,26 @@ export class Tunnel {
       if (cached?.relays.length) { this.relays = cached.relays; return cached.relays }
       throw e
     }
+  }
+
+  /**
+   * Checks this install's device still exists on the account; if it was removed (mullvad.net / another install)
+   * marks this install signed out. false = removed, null = nothing to check or no answer.
+   */
+  async verifyMullvadDevice(): Promise<boolean | null> {
+    const m = (await loadSecrets()).mullvad
+    if (!m?.device) return null
+    const ok = await this.mullvad.isDeviceRegistered(m.number, m.device.id).catch(() => null)
+    if (ok === false) {
+      log.warn('Mullvad device was removed from the account; signed out here')
+      await updateSecrets((x) => ({ ...x, mullvad: x.mullvad ? { ...x.mullvad, device: null, signedOut: true } : null }))
+    }
+    return ok
+  }
+
+  /** Signs out in this install only: forgets the device key; the device stays on the account for anyone sharing it. */
+  async signOutMullvadHere() {
+    await updateSecrets((x) => ({ ...x, mullvad: x.mullvad ? { ...x.mullvad, device: null, signedOut: true } : null }))
   }
 
   /** Devices on the account; [number] defaults to the saved account. */
@@ -939,8 +962,9 @@ export class Tunnel {
       const s = await loadSettings()
       let secrets = await loadSecrets()
       if (s.chainEnabled && parseVpnExit(s.vpnExit)?.kind === 'mullvad' && reason.startsWith('VPN')) {
-        // The device key may have been revoked on the Mullvad website; logging in re-registers it.
-        await this.mullvadLogin().catch(() => undefined)
+        // The device may have been removed on the Mullvad website: then this install is signed out (no silent
+        // re-registration, which would take a slot) and the chain reports it.
+        await this.verifyMullvadDevice()
         secrets = await loadSecrets()
       }
       this.chainBroken = false

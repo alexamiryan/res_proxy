@@ -187,7 +187,7 @@ async function uiState(): Promise<UiState> {
     accounts: secrets.accounts,
     apiKeys: secrets.apiKeys,
     vpnProfiles: secrets.vpnProfiles,
-    mullvad: m ? { number: m.number, expiry: m.expiry, deviceName: m.device?.name ?? '', deviceId: m.device?.id ?? '' } : null,
+    mullvad: m ? { number: m.number, expiry: m.expiry, deviceName: m.device?.name ?? '', deviceId: m.device?.id ?? '', signedOut: !!m.signedOut } : null,
     usage: (usage ?? {}) as UiState['usage'],
     helper: tunnel.status.via === 'helper' ? { ...helperInfo, installed: true } : helperInfo,
     extensionId: chrome.runtime.id,
@@ -238,6 +238,8 @@ async function handle(req: Request): Promise<unknown> {
     case 'mullvadLogin': { const a = await tunnel.mullvadLogin(); return { expiry: a.expiry, deviceName: a.device?.name ?? '' } }
     case 'removeMullvad': await tunnel.removeMullvad(); return null
     case 'mullvadDevices': return tunnel.mullvadDevices(req.number)
+    case 'mullvadVerify': return tunnel.verifyMullvadDevice()
+    case 'mullvadSignOutHere': await tunnel.signOutMullvadHere(); return null
     case 'removeMullvadDevice': await tunnel.removeMullvadDevice(req.id, req.number); return null
     case 'mullvadRelays': return tunnel.mullvadRelays(!!req.force)
     case 'catalog': return catalog(req.provider, !!req.force)

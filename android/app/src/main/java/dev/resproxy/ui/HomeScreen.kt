@@ -171,8 +171,13 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSetti
                     Column(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) {
                         PickerRow("VPN before proxy", vpnLabel(s, vpnProfiles, relays)) { pickingVpn = true }
                         val device = mullvadAccount?.device?.name?.takeIf { it.isNotBlank() }
-                        if (s.chainEnabled && VpnExit.parse(s.vpnExit) is VpnExit.Mullvad && device != null) {
-                            Text("Mullvad device: $device", style = MaterialTheme.typography.bodySmall,
+                        val mullvadLine = when {
+                            device != null -> "Mullvad device: $device"
+                            mullvadAccount?.signedOut == true -> "Signed out of Mullvad — log in in Settings → VPN"
+                            else -> null
+                        }
+                        if (s.chainEnabled && VpnExit.parse(s.vpnExit) is VpnExit.Mullvad && mullvadLine != null) {
+                            Text(mullvadLine, style = MaterialTheme.typography.bodySmall,
                                 color = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.padding(bottom = 8.dp))
                         }
                     }

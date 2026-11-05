@@ -126,6 +126,9 @@ export function VpnPicker({ state, latency }: { state: UiState; latency?: Record
       {s.chainEnabled && s.vpnExit.startsWith('mullvad:') && state.mullvad?.deviceName && (
         <p class="hint">Mullvad device: {state.mullvad.deviceName}</p>
       )}
+      {s.chainEnabled && s.vpnExit.startsWith('mullvad:') && state.mullvad?.signedOut && !state.mullvad.deviceName && (
+        <p class="hint warn">Signed out of Mullvad — log in in Settings → VPN.</p>
+      )}
       {err && <p class="hint warn">{err}</p>}
       {s.chainEnabled && !state.helper.installed && <p class="hint warn">VPN chaining needs the ResProxy helper app (Settings → Helper).</p>}
     </div>

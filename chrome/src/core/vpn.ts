@@ -254,6 +254,12 @@ export class MullvadClient {
     return { number: n, expiry, device }
   }
 
+  /** Whether [deviceId] is still on the account (false once removed on mullvad.net or by another install). */
+  async isDeviceRegistered(number: string, deviceId: string): Promise<boolean> {
+    const token = await this.token(normalizeMullvad(number))
+    return !!(await this.call(`${MULLVAD_API}/accounts/v1/devices/${deviceId}`, { headers: { Authorization: `Bearer ${token}` } }, true))
+  }
+
   async devices(number: string): Promise<MullvadDeviceInfo[]> {
     const token = await this.token(normalizeMullvad(number))
     return parseDevices(await this.call(`${MULLVAD_API}/accounts/v1/devices`, { headers: { Authorization: `Bearer ${token}` } }))

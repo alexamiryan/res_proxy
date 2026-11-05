@@ -109,6 +109,23 @@ class AppContainer(context: Context) {
         vpn.saveMullvad(dev.resproxy.data.MullvadAccount(number = n, expiry = cur?.expiry.orEmpty(), device = device))
     }
 
+    /**
+     * Checks that this install's Mullvad device still exists. If it was removed (on mullvad.net or by another install)
+     * the install is marked signed out. Returns false when removed, null when there's nothing to check or no answer.
+     */
+    suspend fun verifyMullvadDevice(): Boolean? {
+        val acc = vpn.mullvad() ?: return null
+        val d = acc.device ?: return null
+        val ok = runCatching { mullvad.isDeviceRegistered(acc.number, d.id) }.getOrNull() ?: return null
+        if (!ok) vpn.saveMullvad(acc.copy(device = null, signedOut = true))
+        return ok
+    }
+
+    /** Signs out on this install only: forgets its device key; the device stays on the account for anyone sharing it. */
+    suspend fun signOutMullvadHere() {
+        vpn.mullvad()?.let { vpn.saveMullvad(it.copy(device = null, signedOut = true)) }
+    }
+
     /** Logs in to Mullvad (registering this install's key if needed) and stores the result. */
     suspend fun mullvadLogin(): dev.resproxy.data.MullvadAccount {
         val cur = vpn.mullvad() ?: throw IOException("Add your Mullvad account number in Settings → VPN")
@@ -129,7 +146,11 @@ class AppContainer(context: Context) {
                 p.name to WireGuardConfig.parse(p.config)
             }
             is VpnExit.Mullvad -> {
-                val acc = vpn.mullvad()?.takeIf { it.device != null } ?: mullvadLogin()
+                val cur = vpn.mullvad()
+                if (cur != null && cur.device == null && cur.signedOut) {
+                    throw IOException("Signed out of Mullvad on this phone profile. Log in again in Settings → VPN.")
+                }
+                val acc = cur?.takeIf { it.device != null } ?: mullvadLogin()
                 val relays = runCatching { mullvad.refreshRelays() }.getOrElse { err -> mullvad.relays.value.ifEmpty { throw err } }
                 val relay = MullvadClient.pick(e.code, relays) ?: throw IOException("No Mullvad server matches “${e.code}”")
                 "Mullvad ${relay.city} · ${relay.hostname}" to WireGuardConfig.parse(MullvadClient.wgQuick(acc.device!!, relay))

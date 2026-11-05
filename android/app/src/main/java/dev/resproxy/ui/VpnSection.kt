@@ -83,6 +83,14 @@ fun VpnSettings(s: AppSettings) {
     var pasting by remember { mutableStateOf(false) }
     var deleting by remember { mutableStateOf<VpnProfile?>(null) }
     var removingMullvad by remember { mutableStateOf(false) }
+    var signingOutHere by remember { mutableStateOf(false) }
+    var mullvadNotice by remember { mutableStateOf<String?>(null) }
+    // Opening the page checks that this install's device still exists on the account.
+    LaunchedEffect(mullvad?.device?.id) {
+        if (mullvad?.device != null && c.verifyMullvadDevice() == false) {
+            mullvadNotice = "This device was removed from your Mullvad account (on mullvad.net or by another install). Log in to register a new one."
+        }
+    }
     val exit = VpnExit.parse(s.vpnExit)
 
     if (!WireGuard.available) {
@@ -155,25 +163,44 @@ fun VpnSettings(s: AppSettings) {
             }
         } else {
             val masked = "•••• " + acc.number.takeLast(4)
+            val device = acc.device
             SettingRow(
                 "Account $masked",
                 listOfNotNull(
-                    acc.device?.name?.takeIf { it.isNotBlank() }?.let { "Device: $it" } ?: "Signs in on first connect",
+                    when {
+                        device != null -> "Signed in as device ${device.name.ifBlank { device.id.take(8) }}"
+                        acc.signedOut -> "Signed out on this phone profile"
+                        else -> "Signs in on first connect"
+                    },
                     acc.expiry.takeIf { it.isNotBlank() }?.let { "paid until ${it.take(10)}" },
                 ).joinToString(" · "),
             )
+            mullvadNotice?.let { Hint(it, Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) }
             GroupDivider()
-            MullvadDevices(acc.number, thisDeviceId = acc.device?.id)
-            GroupDivider()
-            SettingRow("Refresh account and server list", icon = Icons.Default.Refresh, onClick = {
+            val login = {
                 busy = true; error = null
                 scope.launch {
-                    runCatching { c.mullvadLogin(); c.mullvad.refreshRelays(force = true) }.onFailure { error = it.message }
+                    runCatching { c.mullvadLogin(); c.mullvad.refreshRelays(force = true) }
+                        .onSuccess { mullvadNotice = null }.onFailure { error = it.message }
                     busy = false
                 }
-            }, trailing = { if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) })
+                Unit
+            }
+            val spinner: @Composable () -> Unit = { if (busy) CircularProgressIndicator(Modifier.size(18.dp), strokeWidth = 2.dp) }
+            if (device == null) {
+                SettingRow("Log in", "Registers this phone profile as a new device on the account", Icons.Default.Refresh, onClick = login, trailing = spinner)
+            } else {
+                SettingRow("Refresh account and server list", icon = Icons.Default.Refresh, onClick = login, trailing = spinner)
+            }
             GroupDivider()
-            SettingRow("Remove Mullvad account", "Also removes this device from the account", Icons.Default.Delete, onClick = { removingMullvad = true })
+            MullvadDevices(acc.number, thisDeviceId = device?.id)
+            if (device != null) {
+                GroupDivider()
+                SettingRow("Sign out on this phone profile", "Forgets this device here; it stays on your account. Then log in as a new device.",
+                    onClick = { signingOutHere = true })
+            }
+            GroupDivider()
+            SettingRow("Remove Mullvad account", "Removes this device from the account and forgets the account here", Icons.Default.Delete, onClick = { removingMullvad = true })
         }
     }
 
@@ -232,6 +259,20 @@ fun VpnSettings(s: AppSettings) {
                 }) { Text("Delete") }
             },
             dismissButton = { TextButton(onClick = { deleting = null }) { Text("Cancel") } },
+        )
+    }
+    if (signingOutHere) {
+        AlertDialog(
+            onDismissRequest = { signingOutHere = false },
+            title = { Text("Sign out on this phone profile?") },
+            text = { Text("Forgets the Mullvad device “${mullvad?.device?.name.orEmpty()}” here. It stays on your account, so other profiles or browsers sharing it keep working. Log in again to register this profile as a new device.") },
+            confirmButton = {
+                TextButton(onClick = {
+                    signingOutHere = false
+                    scope.launch { c.signOutMullvadHere(); mullvadNotice = null }
+                }) { Text("Sign out") }
+            },
+            dismissButton = { TextButton(onClick = { signingOutHere = false }) { Text("Cancel") } },
         )
     }
     if (removingMullvad) {
@@ -298,7 +339,7 @@ private fun MullvadDevices(number: String, thisDeviceId: String?, startOpen: Boo
         AlertDialog(
             onDismissRequest = { removing = null },
             title = { Text("Remove “${d.name}”?") },
-            text = { Text("Frees a slot on your Mullvad account. The install using this device (another phone profile or a browser) signs in again with a new device when it next connects.") },
+            text = { Text("Frees a slot on your Mullvad account. Installs using this device (other phone profiles or browsers) are signed out; they can log in again as a new device.") },
             confirmButton = {
                 TextButton(onClick = {
                     removing = null

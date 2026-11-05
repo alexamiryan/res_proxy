@@ -211,8 +211,17 @@ data class MullvadDevice(
     val ipv6: String = "",
 )
 
+/**
+ * [signedOut]: the user signed out on this install, or its device was removed from the account (on mullvad.net or by
+ * another install). Then nothing signs in again by itself (that would take a device slot): the user taps Log in.
+ */
 @Serializable
-data class MullvadAccount(val number: String = "", val expiry: String = "", val device: MullvadDevice? = null)
+data class MullvadAccount(
+    val number: String = "",
+    val expiry: String = "",
+    val device: MullvadDevice? = null,
+    val signedOut: Boolean = false,
+)
 
 /** Parsed [AppSettings.vpnExit]. */
 sealed interface VpnExit {

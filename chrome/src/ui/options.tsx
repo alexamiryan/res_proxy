@@ -179,6 +179,15 @@ function VpnPage({ state }: { state: UiState }) {
   const [adding, setAdding] = useState<VpnProfile | null>(null)
   const [del, setDel] = useState<VpnProfile | null>(null)
   const [removeMv, setRemoveMv] = useState(false)
+  const [signOutMv, setSignOutMv] = useState(false)
+  const [notice, setNotice] = useState('')
+  // Opening the page checks that this browser's device still exists on the account.
+  useEffect(() => {
+    if (!state.mullvad?.deviceId) return
+    void send<boolean | null>({ type: 'mullvadVerify' }).then((ok) => {
+      if (ok === false) setNotice('This device was removed from your Mullvad account (on mullvad.net or by another install). Log in to register a new one.')
+    })
+  }, [state.mullvad?.deviceId])
   const [latency, setLatency] = useState<Record<string, number | null> | undefined>()
   const run = async (f: () => Promise<unknown>) => {
     setErr(''); setMsg(''); setBusy(true)
@@ -201,14 +210,18 @@ function VpnPage({ state }: { state: UiState }) {
         <div class="form">
           <TextField label="Mullvad account number" value={number} onSave={setNumber} debounceMs={0} mono />
           <div class="actions">
-            {state.mullvad && <button class="btn danger" disabled={busy} onClick={() => setRemoveMv(true)}>Remove</button>}
+            {state.mullvad && <button class="btn danger" disabled={busy} onClick={() => setRemoveMv(true)}>Remove account</button>}
+            {state.mullvad?.deviceId && <button class="btn" disabled={busy} onClick={() => setSignOutMv(true)}>Sign out here</button>}
             <button class="btn primary" disabled={busy || !number.replace(/\D/g, '')} onClick={() => void run(async () => {
               await send({ type: 'setMullvad', number })
               const r = await send<{ expiry: string; deviceName: string }>({ type: 'mullvadLogin' })
+              setNotice('')
               setMsg(`Logged in as device “${r.deviceName}”${r.expiry ? `, paid until ${r.expiry.slice(0, 10)}` : ''}`)
-            })}>{state.mullvad?.deviceName ? 'Log in again' : 'Log in'}</button>
+            })}>{state.mullvad?.deviceId ? 'Refresh' : 'Log in'}</button>
           </div>
           {state.mullvad?.deviceName && !msg && <Hint>This browser is the Mullvad device “{state.mullvad.deviceName}”{state.mullvad.expiry ? `, paid until ${state.mullvad.expiry.slice(0, 10)}` : ''}.</Hint>}
+          {state.mullvad && !state.mullvad.deviceId && state.mullvad.signedOut && !notice && <p class="hint warn">Signed out in this browser. Log in to register it as a new device.</p>}
+          {notice && <p class="hint warn">{notice}</p>}
           <Hint>Registers this browser as one of your account's 5 devices. Backups carry only the account number; each install registers its own key.</Hint>
           {msg && <p class="hint ok">{msg}</p>}
         </div>
@@ -255,6 +268,9 @@ function VpnPage({ state }: { state: UiState }) {
       {adding && <ProfileEditor profile={adding} onClose={() => setAdding(null)} />}
       {del && <Confirm title={`Delete ${del.name || 'profile'}?`} confirm="Delete" danger onCancel={() => setDel(null)}
         onConfirm={() => { void send({ type: 'deleteVpnProfile', id: del.id }); setDel(null) }} />}
+      {signOutMv && <Confirm title="Sign out in this browser?" confirm="Sign out"
+        text={`Forgets the Mullvad device “${state.mullvad?.deviceName ?? ''}” here. It stays on your account, so phone profiles or browsers sharing it keep working. Log in again to register this browser as a new device.`}
+        onCancel={() => setSignOutMv(false)} onConfirm={() => { setSignOutMv(false); setMsg(''); void run(() => send({ type: 'mullvadSignOutHere' })) }} />}
       {removeMv && <Confirm title="Remove Mullvad account?" text="This browser is removed from your Mullvad devices. Other installs keep theirs." confirm="Remove" danger
         onCancel={() => setRemoveMv(false)} onConfirm={() => { setRemoveMv(false); void run(async () => { await send({ type: 'removeMullvad' }); setNumber('') }) }} />}
     </>
@@ -292,7 +308,7 @@ function MullvadDevices({ number, thisDeviceId, startOpen }: { number: string; t
       })}
       {removing && (
         <Confirm title={`Remove “${removing.name}”?`} confirm="Remove" danger onCancel={() => setRemoving(null)}
-          text="Frees a slot on your Mullvad account. The install using this device (a phone profile or another browser) signs in again with a new device when it next connects."
+          text="Frees a slot on your Mullvad account. Installs using this device (phone profiles or browsers) are signed out; they can log in again as a new device."
           onConfirm={() => {
             const d = removing
             setRemoving(null)

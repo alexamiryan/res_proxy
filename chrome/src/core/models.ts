@@ -93,7 +93,11 @@ export interface MullvadDevice {
   ipv6: string
 }
 
-export interface MullvadAccount { number: string; expiry: string; device: MullvadDevice | null }
+/**
+ * signedOut: signed out in this install, or its device was removed from the account (mullvad.net / another install).
+ * Then nothing signs in again by itself (that would take a device slot): the user clicks Log in.
+ */
+export interface MullvadAccount { number: string; expiry: string; device: MullvadDevice | null; signedOut?: boolean }
 
 export const SCHEMA = 3
 

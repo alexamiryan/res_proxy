@@ -109,7 +109,7 @@ export async function loadSecrets(): Promise<Secrets> {
     accounts,
     apiKeys: raw.apiKeys ? normApiKeys(raw.apiKeys) : emptyApiKeys(),
     vpnProfiles: Array.isArray(raw.vpnProfiles) ? raw.vpnProfiles.map(normVpnProfile).filter((p): p is VpnProfile => !!p) : [],
-    mullvad: m && typeof m.number === 'string' && m.number ? { number: m.number, expiry: m.expiry ?? '', device: m.device ?? null } : null,
+    mullvad: m && typeof m.number === 'string' && m.number ? { number: m.number, expiry: m.expiry ?? '', device: m.device ?? null, signedOut: !!m.signedOut } : null,
   }
 }
 

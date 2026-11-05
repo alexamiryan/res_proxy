@@ -84,6 +84,10 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
    backup only when "Share Mullvad device" is ticked at export (`BackupPayload.mullvadDevice`); importing it removes
    the importer's own different device from the account. Otherwise only the account number travels. Never share it
    implicitly. Both apps list the account's devices (Settings → VPN) and can remove stale ones.
+   "Sign out here" forgets the local device only (it stays on the account for installs sharing it). A device removed
+   on mullvad.net / by another install is detected when Settings → VPN opens and on VPN-handshake repairs; the install
+   is then `signedOut` and never re-registers by itself (that would silently take a slot): connect fails with "Signed
+   out of Mullvad" until the user taps Log in.
 7. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
    (`data/SecretStore.kt`). Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
 8. Never show the proxy password, the API keys or the backup passphrase in UI or logs (including the extension's

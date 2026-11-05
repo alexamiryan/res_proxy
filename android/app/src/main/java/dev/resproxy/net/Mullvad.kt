@@ -82,6 +82,11 @@ class MullvadClient(private val cacheFile: File) {
         MullvadAccount(n, expiry, device)
     }
 
+    /** Whether [deviceId] is still on the account (false once it was removed on mullvad.net or by another install). */
+    suspend fun isDeviceRegistered(number: String, deviceId: String): Boolean = withContext(Dispatchers.IO) {
+        deviceExists(token(normalize(number)), deviceId)
+    }
+
     /** Every device on the account (each app install / Android profile / browser registers its own). */
     suspend fun devices(number: String): List<MullvadDeviceInfo> = withContext(Dispatchers.IO) {
         val token = token(normalize(number))

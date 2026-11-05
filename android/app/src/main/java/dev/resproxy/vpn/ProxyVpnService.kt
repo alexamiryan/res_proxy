@@ -586,8 +586,9 @@ class ProxyVpnService : VpnService() {
         lock.withLock {
             if (profile == null) return
             if (chainConfig != null && mullvad && reason.startsWith("VPN")) {
-                // The device key may have been revoked on the Mullvad website; logging in re-registers it.
-                runCatching { container.mullvadLogin() }
+                // The device may have been removed on the Mullvad website: then this install is signed out (no silent
+                // re-registration, which would take a slot) and the chain reports it.
+                container.verifyMullvadDevice()
             }
             chainBroken = false
             if (!reloadChain()) return

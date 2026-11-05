@@ -50,7 +50,7 @@ export interface UiState {
   apiKeys: ApiKeys
   vpnProfiles: VpnProfile[]
   /** Without the device private key. */
-  mullvad: { number: string; expiry: string; deviceName: string; deviceId: string } | null
+  mullvad: { number: string; expiry: string; deviceName: string; deviceId: string; signedOut: boolean } | null
   prefs: LocalPrefs
   usage: Partial<Record<Provider, UsageTotals>>
   helper: HelperInfo
@@ -75,6 +75,8 @@ export type Request =
   | { type: 'mullvadLogin' }
   | { type: 'removeMullvad' }
   | { type: 'mullvadDevices'; number?: string }
+  | { type: 'mullvadVerify' }
+  | { type: 'mullvadSignOutHere' }
   | { type: 'removeMullvadDevice'; id: string; number?: string }
   | { type: 'mullvadRelays'; force?: boolean }
   | { type: 'catalog'; provider: Provider; force?: boolean }
