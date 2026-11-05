@@ -237,6 +237,12 @@ tabs → Chrome proxy (PAC) → resproxy-helper 127.0.0.1 (token auth) → [Wire
 - When testing, page loads can come from the HTTP cache (no proxy login at all): cache-bust URLs. In the agent
   sandbox the test proxy can only reach allow-listed sites (example.com works, api.ipify.org doesn't).
 - `go run` leaves its child process running when killed: tests build `cmd/testproxy` and run the binary.
+- Unpacked installs (`installType: development`) reload themselves when `build.json` (written by `build.mjs`) changes
+  on disk; the worker checks on every `health` alarm (30 s). Reload closes open extension pages. Alex's Brave loads
+  `C:\Users\Alex\ResProxy\extension`: copy `chrome/dist/extension` there to update it. The settings sidebar shows
+  the loaded build.
+- The helper page shows the browser's exact native-messaging error ("host not found" = not registered for this
+  browser, "forbidden" = extension ID not in `allowed_origins`, "failed to start" = binary missing/blocked).
 
 ## Conventions
 

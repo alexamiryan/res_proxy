@@ -35,7 +35,24 @@ chrome.runtime.onInstalled.addListener((d) => {
   // After an update the worker restarts: a running connection carries on (or reconnects through the helper).
   void tunnel.resume(false)
 })
-chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'health') void tunnel.alarm() })
+chrome.alarms.onAlarm.addListener((a) => { if (a.name === 'health') { void tunnel.alarm(); void reloadIfRebuilt() } })
+
+// Unpacked installs never update on their own: when a new build is copied over this folder, reload ourselves.
+// A running connection resumes after the reload (helper mode reconnects).
+let loadedBuild: string | null = null
+async function buildStamp(): Promise<string | null> {
+  try { return ((await (await fetch(chrome.runtime.getURL('build.json'), { cache: 'no-store' })).json()) as { built: string }).built } catch { return null }
+}
+void buildStamp().then((b) => { loadedBuild = b })
+async function reloadIfRebuilt() {
+  const self = await chrome.management?.getSelf?.().catch(() => null)
+  if (self && self.installType !== 'development') return
+  const now = await buildStamp()
+  if (loadedBuild && now && now !== loadedBuild) {
+    log.info(`new build ${now} found, reloading`)
+    chrome.runtime.reload()
+  }
+}
 void chrome.alarms.get('health').then((a) => { if (!a) void chrome.alarms.create('health', { periodInMinutes: 0.5 }) })
 // A plain worker restart (suspended and woken): carry on.
 void tunnel.resume(false)

@@ -28,6 +28,8 @@ manifest.version = version
 // Fixed key → fixed extension ID, which the native helper's allowed_origins names.
 manifest.key = readFileSync(join(root, 'extension-key.pub'), 'utf8').trim()
 writeFileSync(join(out, 'manifest.json'), JSON.stringify(manifest, null, 2))
+// Build stamp: unpacked installs reload themselves when it changes; the settings page shows it.
+writeFileSync(join(out, 'build.json'), JSON.stringify({ version, built: new Date().toLocaleString('sv-SE').slice(0, 16) }))
 
 for (const size of [16, 32, 48, 128]) writeFileSync(join(out, 'icons', `icon${size}.png`), icon(size))
 

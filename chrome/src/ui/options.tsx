@@ -18,6 +18,10 @@ const PAGES: [Page, string][] = [
   ['reputation', 'IP reputation'], ['backup', 'Backup & transfer'], ['usage', 'Data usage'], ['advanced', 'Advanced'], ['helper', 'Helper app'],
 ]
 
+/** Build stamp written by build.mjs (shown so it's clear which build is loaded). */
+let BUILD = ''
+void fetch('build.json', { cache: 'no-store' }).then((r) => r.json()).then((b: { built?: string }) => { BUILD = b.built ?? '' }).catch(() => undefined)
+
 const patch = (p: Partial<AppSettings>) => send({ type: 'updateSettings', patch: p })
 
 function useHash(): [string, (h: string) => void] {
@@ -44,6 +48,7 @@ function Options() {
     <div class="options">
       <nav class="sidenav" aria-label="Settings">
         <div class="brand"><img src="icons/icon32.png" alt="" width={24} height={24} /> ResProxy</div>
+        <div class="build muted small">v{chrome.runtime.getManifest().version}{BUILD ? ` · build ${BUILD}` : ''}</div>
         {PAGES.map(([p, label]) => <a href={`#${p}`} class={p === current ? 'on' : ''} aria-current={p === current ? 'page' : undefined}>{label}</a>)}
       </nav>
       <main class="content">
@@ -599,12 +604,20 @@ function AdvancedPage({ state }: { state: UiState }) {
 
 // ---------- helper ----------
 
+/** The browser's native-messaging error, with what to do about it. */
+function helperProblem(error?: string): string {
+  if (!error || /host not found/i.test(error)) return `Not installed — this browser has no helper registered${error ? ` (“${error}”)` : ''}. Run resproxy-helper install.`
+  if (/forbidden/i.test(error)) return `Not allowed for this extension (“${error}”). Run resproxy-helper install again.`
+  if (/failed to start|exited/i.test(error)) return `The helper couldn't start (“${error}”). Check that the file exists and isn't blocked by antivirus.`
+  return `Not working: ${error}`
+}
+
 function HelperPage({ state, helper, recheck }: { state: UiState; helper: HelperInfo | null; recheck: () => void }) {
   const release = 'https://github.com/alexamiryan/res_proxy/releases/latest'
   return (
     <>
       <Group title="Helper app">
-        <Row title="Status" sub={helper === null ? 'Checking…' : helper.installed ? `Installed (${helper.version}, ${helper.platform})` : helper.error ?? 'Not installed'}>
+        <Row title="Status" sub={helper === null ? 'Checking…' : helper.installed ? `Installed (${helper.version}, ${helper.platform})` : helperProblem(helper.error)}>
           <button class="btn small" onClick={recheck}>Check again</button>
         </Row>
         <div class="form">
@@ -623,8 +636,7 @@ function HelperPage({ state, helper, recheck }: { state: UiState; helper: Helper
           <ol class="hint">
             <li>Download <code>resproxy-helper</code> for your system from the <a href={release} target="_blank" rel="noreferrer">latest release</a>.</li>
             <li>Put it somewhere permanent and run it once with <code>install</code>:
-              <pre>resproxy-helper.exe install   (Windows)
-./resproxy-helper install     (macOS / Linux)</pre>
+              <pre>{'resproxy-helper.exe install     (Windows)\n./resproxy-helper install       (macOS / Linux)'}</pre>
             </li>
             <li>Click <b>Check again</b>. Uninstall with <code>resproxy-helper uninstall</code>.</li>
           </ol>

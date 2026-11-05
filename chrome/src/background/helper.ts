@@ -121,9 +121,9 @@ export async function probeHelper(): Promise<{ installed: boolean; version?: str
     const info = await h.hello()
     return { installed: true, ...info }
   } catch (e) {
-    const msg = (e as Error).message
-    // "Specified native messaging host not found." = not registered; anything else is worth showing as is.
-    return { installed: false, error: /native messaging host not found/i.test(msg) ? undefined : msg }
+    // Keep the browser's exact words: "…host not found" (not registered for this browser), "…forbidden"
+    // (extension ID not allowed), "Failed to start…" (blocked, e.g. by antivirus), a timeout…
+    return { installed: false, error: (e as Error).message }
   } finally {
     h.disconnect()
   }

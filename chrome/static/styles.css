@@ -168,7 +168,8 @@ table.sources td:first-child { white-space: nowrap; color: var(--muted); }
 /* options */
 .options { display: grid; grid-template-columns: 220px 1fr; min-height: 100vh; }
 .sidenav { background: var(--surface); border-right: 1px solid var(--line); padding: 16px 10px; display: flex; flex-direction: column; gap: 2px; position: sticky; top: 0; height: 100vh; }
-.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 16px; padding: 4px 8px 14px; }
+.brand { display: flex; align-items: center; gap: 8px; font-weight: 600; font-size: 16px; padding: 4px 8px 2px; }
+.build { padding: 0 8px 14px 40px; }
 .sidenav a { color: var(--text); text-decoration: none; padding: 8px 10px; border-radius: 8px; }
 .sidenav a:hover { background: var(--surface-2); }
 .sidenav a.on { background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent); font-weight: 600; }
