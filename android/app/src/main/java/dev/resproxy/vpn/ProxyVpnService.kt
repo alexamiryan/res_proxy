@@ -1,6 +1,9 @@
 package dev.resproxy.vpn
 
 import android.app.Notification
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.IntentFilter
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Intent
@@ -14,12 +17,13 @@ import android.net.ProxyInfo
 import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
-import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.core.app.ServiceCompat
+import androidx.core.content.ContextCompat
 import dev.resproxy.App
 import dev.resproxy.MainActivity
 import dev.resproxy.R
+import dev.resproxy.data.DiagLog
 import dev.resproxy.data.Profile
 import dev.resproxy.data.SplitMode
 import dev.resproxy.data.TunnelMode
@@ -37,6 +41,7 @@ import dev.resproxy.net.WireGuard
 import dev.resproxy.net.WireGuardConfig
 import dev.resproxy.provider.Presets
 import dev.resproxy.ui.formatBytes
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineExceptionHandler
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -49,6 +54,7 @@ import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.debounce
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Mutex
@@ -73,10 +79,10 @@ class ProxyVpnService : VpnService() {
      * it back. Log it and reconnect instead.
      */
     private val crashHandler = CoroutineExceptionHandler { _, e ->
-        Log.e(TAG, "background job failed, reconnecting", e)
+        DiagLog.log("background job failed, reconnecting", e)
         scope.launch {
             delay(3000)
-            if (container.settings.current().wasConnected) connect()
+            if (container.settings.current().wasConnected) connect("after an error")
         }
     }
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashHandler)
@@ -97,6 +103,16 @@ class ProxyVpnService : VpnService() {
     private var checkJob: Job? = null
 
     @Volatile private var killSwitch = true
+    /** The user turned the tunnel on and hasn't turned it off (`wasConnected`): keep it running. */
+    @Volatile private var wantConnected = false
+    /** Disconnect / revoke in progress: don't restart. */
+    @Volatile private var userStopped = false
+    private var reconnectFailures = 0
+    @Volatile private var nextAttemptAt = 0L
+    /** Set by [kick]: the health loop probes right away. */
+    @Volatile private var kicked = false
+    private var unlockReceiver: BroadcastReceiver? = null
+    private var lastStartAt = 0L
     @Volatile private var bypassLan = true
     /** Open only while the current exit IP passed the reputation check: apps never use an unchecked or bad IP. */
     private val gate = TrafficGate()
@@ -121,48 +137,136 @@ class ProxyVpnService : VpnService() {
 
     override fun onCreate() {
         super.onCreate()
-        scope.launch { container.settings.settings.collect { killSwitch = it.killSwitch; bypassLan = it.bypassLan } }
+        alive = true
+        log("service created")
+        scope.launch {
+            container.settings.settings.collect { killSwitch = it.killSwitch; bypassLan = it.bypassLan; wantConnected = it.wasConnected }
+        }
         scope.launch { watchSettings() }
         scope.launch { watchApiKeys() }
+        scope.launch { supervise() }
+        // Every phase change and its reason goes to the diagnostics log.
+        scope.launch {
+            TunnelState.status.map { it.phase to it.message }.distinctUntilChanged().collect { (phase, msg) ->
+                DiagLog.log("status: $phase" + (msg?.let { " — $it" } ?: ""))
+            }
+        }
+        // Unlocking the phone: retry right away instead of waiting for the next backoff step.
+        val unlock = object : BroadcastReceiver() {
+            override fun onReceive(c: Context, i: Intent) { kick("phone unlocked") }
+        }
+        runCatching { ContextCompat.registerReceiver(this, unlock, IntentFilter(Intent.ACTION_USER_PRESENT), ContextCompat.RECEIVER_NOT_EXPORTED) }
+            .onSuccess { unlockReceiver = unlock }
+        KeepAliveJob.schedule(this)
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         goForeground(buildNotification())
         val active = TunnelState.status.value.isActive
+        log("start command: ${intent?.action ?: "sticky restart"}")
+        // A command for a tunnel that isn't running: stop again, unless the tunnel should be on (the supervisor
+        // brings it back; stopping here would destroy the service mid-reconnect).
+        fun idle() { if (!wantConnected) stopService() }
         when (intent?.action) {
             ACTION_DISCONNECT -> scope.launch {
+                userStopped = true
+                wantConnected = false
                 container.settings.update { it.copy(wasConnected = false) }
+                log("disconnected by the user")
+                DeadManAlarm.disarm(this@ProxyVpnService)
                 lock.withLock { teardown() }
                 stopService()
             }
-            ACTION_ROTATE -> if (!active) stopService() else scope.launch {
+            ACTION_ROTATE -> if (!active) idle() else scope.launch {
                 switchSession(Presets.newSessionId())
                 launchCheck(force = true)
             }
             // Provider / location change: reuse that place's remembered session (same IP) if it's still alive.
-            ACTION_APPLY_LOCATION -> if (!active) stopService() else scope.launch {
+            ACTION_APPLY_LOCATION -> if (!active) idle() else scope.launch {
                 switchSession(container.settings.current().sessionId.ifEmpty { Presets.newSessionId() })
                 launchCheck(force = false)
             }
-            ACTION_RECHECK -> if (!active) stopService() else launchCheck(force = true)
+            ACTION_RECHECK -> if (!active) idle() else launchCheck(force = true)
             // ACTION_CONNECT, always-on start (SERVICE_INTERFACE) and sticky restarts (null intent)
-            else -> scope.launch { connect() }
+            else -> {
+                userStopped = false
+                // Always-on, the update receiver and the watchdog can all start us at once: connect once.
+                val now = System.currentTimeMillis()
+                if (now - lastStartAt < 5_000) log("duplicate start ignored")
+                else {
+                    lastStartAt = now
+                    scope.launch { connect(intent?.action?.substringAfterLast('.') ?: "sticky restart") }
+                }
+            }
         }
         return START_STICKY
     }
 
+    /**
+     * Android took the VPN away. If our VPN consent is gone (another VPN app connected, or the user disconnected or
+     * forgot the VPN in system settings), stop for good. Otherwise it was the system (e.g. a network stack restart):
+     * reconnect.
+     */
     override fun onRevoke() {
         scope.launch {
-            container.settings.update { it.copy(wasConnected = false) }
+            val consent = VpnService.prepare(this@ProxyVpnService) == null
+            log("VPN revoked by Android (permission ${if (consent) "still granted, reconnecting" else "gone, stopping"})")
             lock.withLock { teardown() }
-            stopService()
+            if (consent) {
+                TunnelState.update { it.copy(phase = Phase.PROXY_DOWN, message = "Android stopped the VPN — reconnecting") }
+                kick("revoked")
+            } else {
+                userStopped = true
+                wantConnected = false
+                container.settings.update { it.copy(wasConnected = false) }
+                TunnelState.update { TunnelStatus(phase = Phase.ERROR, message = "Another VPN took over, or the VPN was turned off in Android settings") }
+                stopService()
+            }
         }
     }
 
     override fun onDestroy() {
+        val restart = wantConnected && !userStopped
+        log("service destroyed" + if (restart) " while it should be on — restarting soon" else "")
+        if (restart) KeepAliveJob.scheduleSoon(this) else DeadManAlarm.disarm(this)
+        unlockReceiver?.let { runCatching { unregisterReceiver(it) } }
+        unlockReceiver = null
         teardown()
         scope.cancel()
+        alive = false
         super.onDestroy()
+    }
+
+    private fun log(message: String, e: Throwable? = null) = DiagLog.log(message, e)
+
+    /** Retry now: reset the reconnect backoff and make the health loop probe on its next tick. */
+    private fun kick(why: String) {
+        if (!wantConnected) return
+        log("kick: $why")
+        nextAttemptAt = 0
+        kicked = true
+    }
+
+    /**
+     * The one place that guarantees "on stays on": whenever the user wants the tunnel and nothing is running it
+     * (a failed or aborted connect, a teardown, a bug), connect again with backoff. A tunnel that is up but can't
+     * reach the proxy (PROXY_DOWN with workers running) is left to the health loop.
+     */
+    private suspend fun supervise() {
+        while (scope.isActive) {
+            delay(SUPERVISE_TICK_MS)
+            if (wantConnected && !userStopped) DeadManAlarm.arm(this) else DeadManAlarm.disarm(this)
+            val plumbingUp = profile != null && workers.isNotEmpty() && workers.all { it.isActive }
+            if (plumbingUp) {
+                if (TunnelState.status.value.phase == Phase.CONNECTED) reconnectFailures = 0
+                continue
+            }
+            val now = System.currentTimeMillis()
+            if (!KeepAlive.shouldReconnect(wantConnected && !userStopped, plumbingUp, lock.isLocked, now, nextAttemptAt)) continue
+            reconnectFailures++
+            nextAttemptAt = now + KeepAlive.backoffMs(reconnectFailures)
+            connect("keep-alive: tunnel wasn't running, attempt $reconnectFailures")
+        }
     }
 
     // region lifecycle
@@ -196,11 +300,11 @@ class ProxyVpnService : VpnService() {
                 val now = keys()
                 when {
                     now.tun != built.tun -> {
-                        Log.i(TAG, "routing settings changed, reconnecting")
-                        connect()
+                        log("routing settings changed, reconnecting")
+                        connect("routing settings changed")
                     }
                     now.upstream != built.upstream -> {
-                        Log.i(TAG, "connection settings changed, rebuilding upstream")
+                        log("connection settings changed, rebuilding upstream")
                         lock.withLock {
                             if (profile == null) return@withLock
                             builtWith = now
@@ -221,17 +325,54 @@ class ProxyVpnService : VpnService() {
             container.reputation.clearCache()
             val st = TunnelState.status.value
             if (st.phase == Phase.CONNECTED && !st.checking) {
-                Log.i(TAG, "API keys changed, re-checking reputation")
+                log("API keys changed, re-checking reputation")
                 launchCheck(force = true)
             }
         }
     }
 
-    private suspend fun connect() {
+    /**
+     * (Re)builds everything. Never call it from a worker ([workers], [checkJob]): its teardown cancels them, which
+     * would abort this connect half way. Use [reconnectAsync] there.
+     */
+    private suspend fun connect(reason: String) {
         lock.withLock {
+            log("connect ($reason)")
             // Keep the old TUN until the new one is established, so a reconnect never leaks traffic.
             val oldTun = tun
             tun = null
+            try {
+                connectLocked()
+            } catch (e: CancellationException) {
+                log("connect aborted")
+                throw e
+            } catch (e: Exception) {
+                log("connect failed", e)
+                stopKeepingTun()
+                fail(describe(e))
+            } finally {
+                // The old TUN is closed only once a new one replaced it. Without a new one, the kill switch keeps the
+                // old one: nothing reads it any more, so traffic stays blocked instead of going direct.
+                when {
+                    tun != null && tun !== oldTun -> runCatching { oldTun?.close() }
+                    tun == null && killSwitch -> tun = oldTun
+                    tun == null -> runCatching { oldTun?.close() }
+                }
+            }
+        }
+    }
+
+    /** Failure while (re)connecting: stop everything; with the kill switch keep the TUN up so traffic stays blocked. */
+    private fun stopKeepingTun() = if (killSwitch) teardownKeepingTun() else teardown()
+
+    /** Runs [connect] in its own job, so callers inside workers aren't cancelled by its teardown. */
+    private fun reconnectAsync(reason: String) {
+        scope.launch { connect(reason) }
+    }
+
+    /** Builds the tunnel; [connect] closes the previous TUN once this established a new one. */
+    private suspend fun connectLocked() {
+        run {
             teardown()
             var s = container.settings.current()
             if (s.connection.sticky) {
@@ -241,7 +382,6 @@ class ProxyVpnService : VpnService() {
             }
             val p = container.connectionProfile()
             if (p == null) {
-                oldTun?.close()
                 return fail("Add your ${s.provider.label} account first")
             }
             profile = p
@@ -249,15 +389,22 @@ class ProxyVpnService : VpnService() {
             TunnelState.update {
                 TunnelStatus(phase = Phase.CONNECTING, profileId = p.id, profileName = displayName(p, s.location.label), sessionId = p.sessionId)
             }
+            wantConnected = true
             container.settings.update { it.copy(wasConnected = true) }
             val full = p.tunnelMode == TunnelMode.FULL
             // Full tunnel: capture all traffic of the routed apps before any upstream I/O.
             if (full) {
-                tun = buildTun(p, s.bypassLan)
-                oldTun?.close()
-                if (tun == null) { teardown(); return fail("VPN permission not granted") }
-            } else {
-                oldTun?.close()
+                val assumedLockdown = lockdown()
+                tun = buildTun(p, s.bypassLan) ?: return fail("VPN permission not granted")
+                // Android reports "Block connections without VPN" only once our VPN is up; the LAN routes depend on it.
+                // Rebuild the TUN right away instead of a whole reconnect later (watchSettings would see the change).
+                if (lockdown() != assumedLockdown) {
+                    log("lockdown ${if (lockdown()) "on" else "off"}: rebuilding the TUN routes")
+                    val first = tun
+                    tun = buildTun(p, s.bypassLan) ?: return fail("VPN permission not granted")
+                    runCatching { first?.close() }
+                }
+                builtWith = keys()
             }
             workers = listOf(scope.launch { statsLoop(p.id) }, scope.launch { healthLoop() })
             registerNetworkCallback()
@@ -265,13 +412,13 @@ class ProxyVpnService : VpnService() {
             try {
                 startChain()
                 startUpstream(p)
-                if (!full) tun = buildTun(p, false) ?: run { teardown(); return fail("VPN permission not granted") }
+                if (!full) tun = buildTun(p, false) ?: run { stopKeepingTun(); return fail("VPN permission not granted") }
                 if (full) startHev()
             } catch (e: IllegalArgumentException) {
-                teardown()
+                stopKeepingTun()
                 return fail(e.message ?: "Invalid connection settings")
             } catch (e: Exception) {
-                Log.w(TAG, "tunnel start failed", e)
+                log("tunnel start failed", e)
                 if (!onProxyFailure(e)) return
             }
             TunnelState.update {
@@ -300,7 +447,7 @@ class ProxyVpnService : VpnService() {
             TunnelState.update { it.copy(chainName = name, vpnPingMs = null) }
             true
         } catch (e: Exception) {
-            Log.w(TAG, "VPN chain", e)
+            log("VPN chain", e)
             // Never fall back to an unchained connection: that would show the real IP to the proxy.
             TunnelState.update { it.copy(chainName = null) }
             chainBroken = true
@@ -356,7 +503,7 @@ class ProxyVpnService : VpnService() {
             }
             true
         } catch (e: Exception) {
-            Log.w(TAG, "upstream restart failed", e)
+            log("upstream restart failed", e)
             onProxyFailure(e)
             false
         }
@@ -373,7 +520,7 @@ class ProxyVpnService : VpnService() {
             true
         } else {
             teardown()
-            fail("$msg — disconnected (kill switch is off)")
+            fail("$msg — traffic goes direct (kill switch is off)")
             false
         }
     }
@@ -407,9 +554,30 @@ class ProxyVpnService : VpnService() {
         TunnelState.update { if (it.phase == Phase.ERROR) it else TunnelStatus() }
     }
 
+    /** teardown() but leaves the TUN open: with the kill switch, a failed reconnect keeps blocking traffic. */
+    private fun teardownKeepingTun() {
+        val keep = tun
+        tun = null
+        teardown()
+        tun = keep
+    }
+
+    /**
+     * The tunnel couldn't be (re)built. If the user wants it on, stay in the foreground and let the supervisor retry
+     * with backoff (traffic stays blocked with the kill switch). Without the user wanting it, or without VPN
+     * permission, stop.
+     */
     private fun fail(message: String) {
-        TunnelState.update { TunnelStatus(phase = Phase.ERROR, message = message) }
-        stopService()
+        val retry = wantConnected && !userStopped && VpnService.prepare(this) == null
+        log("failed: $message" + if (retry) " (retrying)" else " (stopping)")
+        if (retry) {
+            TunnelState.update {
+                TunnelStatus(phase = Phase.PROXY_DOWN, message = "$message — retrying", trafficBlocked = true, repairs = it.repairs)
+            }
+        } else {
+            TunnelState.update { TunnelStatus(phase = Phase.ERROR, message = message) }
+            stopService()
+        }
     }
 
     private fun stopService() {
@@ -543,7 +711,7 @@ class ProxyVpnService : VpnService() {
                 val isNew = known.add(network)
                 // Initial callbacks just list what's there; a network appearing after one was lost is a switch.
                 if (isNew && lostAny) {
-                    Log.i(TAG, "network switched to $network")
+                    log("network switched to $network")
                     pending?.cancel()
                     pending = scope.launch { delay(2000); repair("network changed", force = true) }
                 }
@@ -552,12 +720,12 @@ class ProxyVpnService : VpnService() {
             override fun onLost(network: Network) {
                 known.remove(network)
                 lostAny = true
-                Log.i(TAG, "network lost: $network")
+                log("network lost: $network")
             }
         }
         runCatching { cm.registerNetworkCallback(request, cb) }
             .onSuccess { netCallback = cb }
-            .onFailure { Log.w(TAG, "network callback", it) }
+            .onFailure { log("network callback", it) }
     }
 
     private fun unregisterNetworkCallback() {
@@ -574,12 +742,14 @@ class ProxyVpnService : VpnService() {
         val now = System.currentTimeMillis()
         if (!force && now - lastRepairAt < 60_000) return
         lastRepairAt = now
-        Log.i(TAG, "repairing connection: $reason")
+        log("repairing connection: $reason")
         val retry = reason == "retrying"
         if (!retry && failedRepairs >= 3) {
+            // Repairs didn't help: rebuild from scratch. In its own job: this may run inside the health loop, which
+            // connect's teardown cancels (that used to abort the reconnect and leave the tunnel down for good).
             failedRepairs = 0
-            connect()
-            TunnelState.update { it.copy(repairs = it.repairs + 1, message = "Reconnected ($reason)") }
+            log("repairs didn't help ($reason), reconnecting")
+            reconnectAsync("repair: $reason")
             return
         }
         if (!retry) failedRepairs++
@@ -594,10 +764,14 @@ class ProxyVpnService : VpnService() {
             chainBroken = false
             if (!reloadChain()) return
             builtWith = keys()
+            val wasDown = TunnelState.status.value.phase == Phase.PROXY_DOWN
             if (rebuild()) {
                 TunnelState.update {
-                    if (retry) it.copy(phase = Phase.CONNECTED, message = null)
-                    else it.copy(phase = Phase.CONNECTED, repairs = it.repairs + 1, message = "Connection repaired ($reason)")
+                    val repairs = if (retry) it.repairs else it.repairs + 1
+                    // Rebuilt, but not known to work yet: the next probe (health loop / check) says CONNECTED.
+                    if (wasDown) it.copy(repairs = repairs, message = "Rebuilt the connection ($reason) — waiting for the proxy")
+                    else if (retry) it.copy(phase = Phase.CONNECTED, message = null)
+                    else it.copy(phase = Phase.CONNECTED, repairs = repairs, message = "Connection repaired ($reason)")
                 }
             }
         }
@@ -671,6 +845,7 @@ class ProxyVpnService : VpnService() {
         var appUpAtQuiet = 0L
         while (scope.isActive) {
             delay(TICK_MS)
+            if (kicked) { kicked = false; lastProbe = 0; fails = minOf(fails, 1) }
             val now = System.currentTimeMillis()
             val interval = container.settings.current().healthIntervalSec.coerceIn(10, 600) * 1000L
             val down = TunnelState.status.value.phase == Phase.PROXY_DOWN
@@ -691,7 +866,7 @@ class ProxyVpnService : VpnService() {
                 relayHealth.distinctFailedHosts(failingSince) >= 2
             ) {
                 suspect = "apps' connections were failing"
-                Log.i(TAG, "relay: $failsInStreak failures, no successes; last: ${relayHealth.lastError}")
+                log("relay: $failsInStreak failures, no successes; last: ${relayHealth.lastError}")
             }
 
             // 2. Tunnel engine stuck: apps keep sending, but no connection reaches the relay.
@@ -756,7 +931,7 @@ class ProxyVpnService : VpnService() {
                 deadExitProbes = if (exitNodeDead(e)) deadExitProbes + 1 else 0
                 if (deadExitProbes >= DEAD_EXIT_PROBES && profile?.sticky == true) {
                     // Repairs and reconnects reuse the same session, so they'd never get past a dead exit node.
-                    Log.i(TAG, "exit node not answering (${e.message}), switching to a new session")
+                    log("exit node not answering (${e.message}), switching to a new session")
                     deadExitProbes = 0; fails = 0
                     switchSession(Presets.newSessionId())
                     TunnelState.update { it.copy(message = "Exit IP stopped working — switched to a new one") }
@@ -798,6 +973,7 @@ class ProxyVpnService : VpnService() {
                 if (!s.recheckOnConnect && !force) {
                     // Checks are turned off: nothing to wait for.
                     allowTraffic(null)
+                    log("IP checks are off: traffic allowed")
                     TunnelState.update { it.copy(checking = false) }
                     return@launch
                 }
@@ -807,6 +983,8 @@ class ProxyVpnService : VpnService() {
                     TunnelState.update { it.copy(exitIp = exit.ip) }
                     container.reputation.check(exit.ip, force, fallbackProxyPort = port)
                 } catch (e: Exception) {
+                    // Torn down meanwhile (reconnect): this check is obsolete; its local proxy is gone.
+                    if (!isActive) return@launch
                     // The health loop tries again.
                     TunnelState.update { it.copy(checking = false, message = "Couldn't check the IP (${e.message}) — traffic blocked, retrying") }
                     return@launch
@@ -820,6 +998,7 @@ class ProxyVpnService : VpnService() {
                 val p = profile ?: return@launch
                 if (report.verdict.severity < s.rotateThreshold.severity) {
                     allowTraffic(report.ip)
+                    log("exit IP ${report.ip} is ${verdictWord(report.verdict)}: traffic allowed")
                     TunnelState.update { it.copy(message = null) }
                     if (attempt > 0) notifyRotation("Found ${verdictWord(report.verdict)} IP ${report.ip} after $attempt rotation(s)")
                     break
@@ -827,6 +1006,7 @@ class ProxyVpnService : VpnService() {
                 blockTraffic()
                 if (!s.autoRotate || !p.sticky) {
                     waitingForUser = true
+                    log("exit IP ${report.ip} is ${verdictWord(report.verdict)}, auto-rotate off: blocked until New IP")
                     TunnelState.update { it.copy(message = "IP is ${verdictWord(report.verdict)} — traffic blocked. Tap New IP.") }
                     break
                 }
@@ -898,6 +1078,9 @@ class ProxyVpnService : VpnService() {
     // endregion
 
     companion object {
+        /** A service instance exists in this process; it keeps itself running (see `supervise`). */
+        @Volatile var alive = false
+            private set
         const val ACTION_CONNECT = "dev.resproxy.CONNECT"
         const val ACTION_DISCONNECT = "dev.resproxy.DISCONNECT"
         const val ACTION_ROTATE = "dev.resproxy.ROTATE"
@@ -907,6 +1090,7 @@ class ProxyVpnService : VpnService() {
         private const val ALERT_ID = 2
         private const val TAG = "ResProxy"
         private const val TICK_MS = 5_000L
+        private const val SUPERVISE_TICK_MS = 5_000L
         /** Rotations in a row without a pause; after that one every [ROTATION_PAUSE_MS]. */
         private const val QUICK_ROTATIONS = 10
         private const val ROTATION_PAUSE_MS = 20_000L

@@ -192,6 +192,10 @@ fun HomeScreen(onSettings: () -> Unit, onAccount: (Provider) -> Unit, onVpnSetti
                 }
             }
 
+            if (settings?.wasConnected == true) {
+                Spacer(Modifier.height(12.dp))
+                BackgroundUseCard()
+            }
             if (status.isActive) {
                 Spacer(Modifier.height(12.dp))
                 ConnectionCard(status)

@@ -1,5 +1,9 @@
 package dev.resproxy
 
+import dev.resproxy.vpn.KeepAliveJob
+import dev.resproxy.data.DiagLog
+import android.os.Build
+import android.app.ActivityManager
 import android.app.Application
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -173,6 +177,8 @@ class App : Application() {
 
     override fun onCreate() {
         super.onCreate()
+        DiagLog.init(filesDir)
+        logProcessStart()
         container = AppContainer(this)
         container.appScope.launch {
             try {
@@ -189,6 +195,30 @@ class App : Application() {
         val nm = getSystemService(NotificationManager::class.java)
         nm.createNotificationChannel(NotificationChannel(CHANNEL_VPN, "VPN status", NotificationManager.IMPORTANCE_LOW))
         nm.createNotificationChannel(NotificationChannel(CHANNEL_ALERTS, "IP reputation alerts", NotificationManager.IMPORTANCE_DEFAULT))
+        KeepAliveJob.schedule(this)
+    }
+
+    private fun exitReason(r: Int) = when (r) {
+        1 -> "exited by itself"; 2 -> "killed (signal)"; 3 -> "killed for low memory"; 4 -> "crashed"; 5 -> "native crash"
+        6 -> "not responding (ANR)"; 7 -> "failed to start"; 8 -> "permission change"; 9 -> "excessive resource use"
+        10 -> "user request"; 11 -> "user (profile) stopped"; 12 -> "dependency died"; 13 -> "other"; 14 -> "frozen"
+        15 -> "package state change"; 16 -> "app updated"
+        else -> "reason $r"
+    }
+
+    /** Why the previous process ended (killed for memory, crashed, user stopped, updated…): the first question after a drop. */
+    private fun logProcessStart() {
+        val last = if (Build.VERSION.SDK_INT >= 30) {
+            runCatching {
+                getSystemService(ActivityManager::class.java).getHistoricalProcessExitReasons(packageName, 0, 1).firstOrNull()
+            }.getOrNull()
+        } else null
+        DiagLog.log(
+            "process started" + (last?.let {
+                " — previous one ended ${java.text.SimpleDateFormat("MM-dd HH:mm:ss", java.util.Locale.US).format(java.util.Date(it.timestamp))}: " +
+                    exitReason(it.reason) + (it.description?.takeIf { d -> d.isNotBlank() }?.let { d -> " ($d)" } ?: "")
+            } ?: ""),
+        )
     }
 
     companion object {

@@ -18,6 +18,7 @@ import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
+import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DataUsage
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Backup
@@ -67,7 +68,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class SettingsPage(val title: String) {
-    VPN("VPN"), SPLIT("Split tunnelling"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced")
+    VPN("VPN"), SPLIT("Split tunnelling"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced"), DIAGNOSTICS("Diagnostics")
 }
 
 /** Settings home: accounts plus one row per page. */
@@ -130,6 +131,8 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit, onPage: (S
             SettingRow("Data usage", "Traffic per provider", Icons.Default.DataUsage, onClick = { onPage(SettingsPage.USAGE) })
             GroupDivider()
             SettingRow("Advanced", "Protocol, session, gateway, routing", Icons.Default.Tune, onClick = { onPage(SettingsPage.ADVANCED) })
+            GroupDivider()
+            SettingRow("Diagnostics", "Connection log: drops, repairs, reconnects", Icons.Default.BugReport, onClick = { onPage(SettingsPage.DIAGNOSTICS) })
         }
     }
 }
@@ -169,6 +172,9 @@ fun SettingsPageScreen(page: SettingsPage, onBack: () -> Unit) {
                         update { it.copy(bypassLan = v) }
                     }
                 }
+                SettingsGroup("Stay connected") {
+                    BackgroundUseRow()
+                }
                 SettingsGroup("Always-on VPN") {
                     Hint("For protection even before the app starts, turn on Always-on VPN and \"Block connections without VPN\" for ResProxy.")
                     SettingRow("Open system VPN settings", onClick = { ctx.startActivity(Intent(Settings.ACTION_VPN_SETTINGS)) })
@@ -190,6 +196,7 @@ fun SettingsPageScreen(page: SettingsPage, onBack: () -> Unit) {
             }
             SettingsPage.USAGE -> UsageSettings()
             SettingsPage.ADVANCED -> AdvancedSettings(s, ::updateConn)
+            SettingsPage.DIAGNOSTICS -> DiagnosticsSettings()
         }
     }
 }

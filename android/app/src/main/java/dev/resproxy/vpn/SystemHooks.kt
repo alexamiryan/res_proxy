@@ -25,10 +25,7 @@ class BootReceiver : BroadcastReceiver() {
         val container = (context.applicationContext as App).container
         container.appScope.launch {
             try {
-                val s = container.settings.current()
-                if (s.autoConnect && s.wasConnected && VpnService.prepare(context) == null) {
-                    TunnelController.connect(context)
-                }
+                KeepAlive.ensureRunning(context, if (intent.action == Intent.ACTION_BOOT_COMPLETED) "boot" else "app updated")
             } finally {
                 pending.finish()
             }

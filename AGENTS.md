@@ -101,10 +101,20 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
    off leaves traffic blocked until "New IP". Failed or UNKNOWN checks are retried by the health loop. Turning
    checks off opens the gate.
 4. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
-   retrying. Off: failures disconnect.
-5. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
+   retrying. Off: traffic goes direct while it keeps retrying.
+5. **On stays on.** Once the user turns the tunnel on (`wasConnected`), only Disconnect (app, notification, tile) or
+   losing the VPN permission (another VPN app, system settings) turns it off. Every other failure retries forever:
+   `fail()` keeps the service in the foreground (`PROXY_DOWN` "… — retrying") instead of stopping it, the service's
+   `supervise()` loop reconnects with backoff (`KeepAlive.backoffMs`: 5 s … 2 min) whenever nothing is running, and
+   `DeadManAlarm` (an exact alarm the service keeps re-arming 60 s ahead; `KeepAliveReceiver` restarts the tunnel when
+   it fires, i.e. when the process died), `KeepAliveJob` (JobScheduler, every 15 min, persisted, plus a one-shot after
+   `onDestroy`), boot / update, opening the app and unlocking the phone (`USER_PRESENT` → `kick`) restart or hurry it. A failed reconnect keeps the old TUN
+   open with the kill switch (traffic blocked, not direct). `onRevoke` with the permission still granted reconnects.
+   Everything is written to the diagnostics log (`data/DiagLog.kt`, `files/diag.log`, Settings → Diagnostics),
+   including why the previous process ended (`ApplicationExitInfo`).
+6. **Never fall back to an unchained connection** when the selected VPN can't be set up (`chainBroken`).
    That would show the real IP to the proxy.
-6. Mullvad device keys are **per install** unless the user explicitly shares one: `MullvadAccount.device` goes into a
+7. Mullvad device keys are **per install** unless the user explicitly shares one: `MullvadAccount.device` goes into a
    backup only when "Share Mullvad device" is ticked at export (`BackupPayload.mullvadDevice`); importing it removes
    the importer's own different device from the account. Otherwise only the account number travels. Never share it
    implicitly. Both apps list the account's devices (Settings → VPN) and can remove stale ones.
@@ -112,11 +122,11 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
    on mullvad.net / by another install is detected when Settings → VPN opens and on VPN-handshake repairs; the install
    is then `signedOut` and never re-registers by itself (that would silently take a slot): connect fails with "Signed
    out of Mullvad" until the user taps Log in.
-7. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
+8. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
    (`data/SecretStore.kt`). Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
-8. Never show the proxy password, the API keys or the backup passphrase in UI or logs (including the extension's
+9. Never show the proxy password, the API keys or the backup passphrase in UI or logs (including the extension's
    Diagnostics log in `chrome.storage.session`).
-9. Chrome: secrets are AES-GCM encrypted with a non-extractable key in IndexedDB (`background/store.ts`); only the
+10. Chrome: secrets are AES-GCM encrypted with a non-extractable key in IndexedDB (`background/store.ts`); only the
    service worker writes storage (pages go through the message API in `shared/protocol.ts`).
 
 ## Layout (Android, under `android/`)
@@ -126,7 +136,7 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 | `app/src/main/java/dev/resproxy/App.kt` | `AppContainer` (manual DI): repos, `resolveVpn`, Mullvad login, backup export/import, migrations |
 | `data/` | `Models.kt` (Account, AppSettings, ConnectionSettings, VpnProfile, MullvadAccount, `VpnExit`), `Repositories.kt` (DataStore repos incl. `VpnRepository`), `SecretStore.kt`, `Backup.kt` |
 | `vpn/ProxyVpnService.kt` | TUN lifecycle, `watchSettings` (live apply), `healthLoop` (stall/handshake/engine detection), `repair`, network-change callback, reputation check + auto-rotate |
-| `vpn/` other | `HevConfig` (YAML), `Routes` (LAN-bypass route complement), `TunnelState` (status + controller), `SystemHooks` (boot receiver, QS tile), `TunnelNative` (JNI) |
+| `vpn/` other | `HevConfig` (YAML), `Routes` (LAN-bypass route complement), `TunnelState` (status + controller), `SystemHooks` (boot receiver, QS tile), `KeepAlive` (reconnect policy, `KeepAliveJob` watchdog), `TunnelNative` (JNI) |
 | `net/` | `Upstream` (SOCKS5/HTTP clients, RTT samples), `LoopbackServers` (relay, HTTP proxy, `RelayHealth`), `Resolver` (system DNS + DoH), `WireGuard` (config parser + JNI), `Mullvad` (API, relay list, wg-quick builder), `X25519`, `ProxyProbe`, `LatencyProbe` (parallel ICMP ping to every Mullvad relay / profile endpoint; results sort the Settings → VPN list and the home VPN picker) |
 | `provider/` | Credential presets per provider (`Presets.kt`), location catalogs (`ProviderLocations.kt`) |
 | `reputation/` | Sources, parsers, `ReputationAggregator` verdict rules |
@@ -236,7 +246,8 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   - `dumpsys connectivity` for TUN routes.
   - The browser to `https://ipinfo.io/ip` for real traffic through the tunnel.
   - `svc wifi disable/enable` for network-change repair.
-- `run-as dev.resproxy [--user N]` works on debug builds.
+- `run-as dev.resproxy [--user N]` works on debug builds. `cat files/diag.log` is the tunnel's event log;
+  `dumpsys activity exit-info dev.resproxy` says why each user's process ended.
 
 ## Gotchas learned the hard way
 
@@ -270,6 +281,15 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   those with the network's DNS and goes direct if they're private. Public names are never resolved locally.
 - A city can be targeted without a state (both providers); with "Any state" the picker lists every city in
   the country.
+- **Android doesn't restart a killed VPN service.** After `kill -9` (what a low-memory kill looks like) neither
+  `START_STICKY` nor Always-on brought it back within 6 minutes, and the 15-min job is too slow, so with lockdown the
+  profile was offline (without lockdown, unprotected). The dead man's alarm restarts it within ~60 s. Exact alarms
+  (`USE_EXACT_ALARM`, granted at install for a sideloaded app) are allowed to start a foreground service from the
+  background; plain jobs may not be unless the app ignores battery optimizations (Protection → Run in the background).
+- **Never call `connect()` from a worker** (health loop, stats loop, check job): its `teardown()` cancels the worker,
+  which aborts the connect at its next suspend point and leaves the tunnel DISCONNECTED with nothing to restart it.
+  That was the "Disconnected in the morning" bug: after an outage of a few minutes the health loop's third failed
+  repair called `connect()` inline. Use `reconnectAsync()`.
 - `LoopbackServer.stop` iterates the concurrent socket set directly: Kotlin `toList()` on it threw
   `NoSuchElementException` when a connection closed mid-copy, which crashed the app during a repair.
 - Users paste whole proxy lines or usernames with targeting params. Presets strip existing params, and the UI
