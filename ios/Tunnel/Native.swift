@@ -63,6 +63,8 @@ enum Bridge {
 }
 
 /// hev-socks5-tunnel running on the utun descriptor, sending every TCP connection to the relay's SOCKS5 port.
+/// Keep it running across upstream rebuilds: its fake-IP DNS table (100.64/10) lives inside it and starts over on
+/// every restart, so addresses apps still have cached would point nowhere or at a different site.
 final class Hev {
     static let tunV4 = "198.18.0.1"
     static let tunV6 = "fc00::1"
@@ -71,6 +73,10 @@ final class Hev {
 
     private var thread: Thread?
     private(set) var running = false
+    /// The relay port this instance was started with (0 when stopped).
+    private(set) var socksPort = 0
+    /// Started and not stopped by us, but its thread has ended: hev itself is broken.
+    var died: Bool { thread != nil && !running }
     private let done = DispatchSemaphore(value: 0)
 
     /// YAML single-quoted scalar.
@@ -106,6 +112,7 @@ final class Hev {
         stop()
         let cfg = Array(Hev.config(port: socksPort, user: user, pass: pass).utf8)
         running = true
+        self.socksPort = socksPort
         let t = Thread { [weak self] in
             _ = cfg.withUnsafeBufferPointer { hev_socks5_tunnel_main_from_str($0.baseAddress, UInt32(cfg.count), fd) }
             self?.running = false
@@ -123,6 +130,7 @@ final class Hev {
         _ = done.wait(timeout: .now() + 3)
         thread = nil
         running = false
+        socksPort = 0
     }
 
     /// (down, up) bytes as apps see them, since hev started.
@@ -130,7 +138,7 @@ final class Hev {
         guard running else { return (0, 0) }
         var txp = 0, txb = 0, rxp = 0, rxb = 0
         hev_socks5_tunnel_stats(&txp, &txb, &rxp, &rxb)
-        // hev counts the TUN interface: tx = written to the TUN (to apps, download), rx = read from it (upload).
-        return (Int64(txb), Int64(rxb))
+        // hev counts from its own side of the TUN: tx = read from it (apps' upload), rx = written to it (download).
+        return (Int64(rxb), Int64(txb))
     }
 }

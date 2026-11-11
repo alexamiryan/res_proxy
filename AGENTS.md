@@ -83,6 +83,11 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   reconnects/repairs don't leak. Kill switch on also sets `includeAllNetworks` on the VPN configuration; LAN bypass
   sets `excludeLocalNetworks` plus excluded routes, and the relay connects private IPs / local names directly.
 - No UDP: the relay refuses UDP ASSOCIATE (apps fall back to TCP); DNS is hev's fake-IP (100.64/10) mapdns.
+- hev keeps running across repairs, network switches, rotations and upstream settings changes, as on Android: the
+  bridge's `start` replaces only the upstream (and WireGuard); the SOCKS front keeps its port, and `socks` with the
+  same user/pass returns it (`startUpstream` reuses them while hev runs). While the upstream is down the front refuses
+  connections (`route()` in `proxy.go`, never an old or unchained upstream) and refuses fake IPs with reply 4. Only
+  `tunnel engine …` repairs, hev's thread ending by itself (`Hev.died`) and full reconnects restart hev.
 - App ↔ tunnel: settings JSON in the App Group (`group.dev.resproxy`), secrets in the Keychain (access group
   `$(AppIdentifierPrefix)dev.resproxy.shared`), commands and status via `sendProviderMessage` (`TunnelMessage`),
   last status / usage as files in the App Group.
@@ -335,8 +340,6 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 
 ### iOS
 
-- Not fixed on iOS yet: `startUpstream` restarts hev on every rebuild (resets its fake-IP DNS, see the Android
-  gotcha) and `Hev.stats()` has download/upload swapped.
 - Network extensions are killed above ~50 MB. `bridge_ios.go` caps the Go heap (`SetMemoryLimit` 24 MB); WireGuard
   chaining runs a gVisor netstack in that budget.
 - `sys/kern_control.h` isn't in the iOS SDK: `TunFd.c` declares `ctl_info` / `sockaddr_ctl` / `CTLIOCGINFO` itself.

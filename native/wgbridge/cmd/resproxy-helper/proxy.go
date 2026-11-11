@@ -57,8 +57,11 @@ func (s *state) dialer() dialFunc {
 	return d.DialContext
 }
 
+// start (re)starts the upstream: local proxy, WireGuard and the proxy endpoint. A running SOCKS front (iOS) keeps
+// its port and credentials, so hev keeps running and its fake-IP DNS table stays valid; its connections through the
+// old upstream are dropped, and new ones are refused until this returns.
 func (s *state) start(up endpoint, wgConf, token string) (int, error) {
-	s.stopAll()
+	s.stopUpstream()
 	if up.Host == "" || up.Port == 0 {
 		return 0, errors.New("proxy host or port is empty")
 	}
@@ -73,7 +76,7 @@ func (s *state) start(up endpoint, wgConf, token string) (int, error) {
 	}
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		s.stopAll()
+		s.stopUpstream()
 		return 0, err
 	}
 	s.mu.Lock()
@@ -111,22 +114,54 @@ func (s *state) closeConns() {
 	})
 }
 
-func (s *state) stopAll() {
+// stopUpstream stops the local proxy and WireGuard and drops every proxied connection. The SOCKS front keeps
+// listening but refuses connections until the next start (never through an old, possibly unchained upstream).
+func (s *state) stopUpstream() {
 	s.mu.Lock()
 	ln, wg, ss := s.ln, s.wg, s.socks
-	s.ln, s.wg, s.socks = nil, nil, nil
+	s.ln, s.wg = nil, nil
 	s.mu.Unlock()
 	if ln != nil {
 		ln.Close()
 	}
 	if ss != nil {
-		ss.stop()
+		ss.closeConns()
 	}
 	s.closeConns()
 	if wg != nil {
 		wg.stop()
 	}
 }
+
+// stopAll stops everything, the SOCKS front included.
+func (s *state) stopAll() {
+	s.mu.Lock()
+	ss := s.socks
+	s.socks = nil
+	s.mu.Unlock()
+	if ss != nil {
+		ss.stop()
+	}
+	s.stopUpstream()
+}
+
+// route is the dialer and endpoint for one connection, taken together so a connection never mixes a new endpoint
+// with an old (or missing) VPN. Fails while the upstream is stopped or rebuilding.
+func (s *state) route() (dialFunc, endpoint, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.ln == nil {
+		return nil, endpoint{}, errRebuilding
+	}
+	if s.wg != nil {
+		// The proxy hostname is resolved by the VPN's DNS, inside the tunnel.
+		return s.wg.net.DialContext, s.upstream, nil
+	}
+	d := &net.Dialer{Timeout: 15 * time.Second, KeepAlive: 30 * time.Second}
+	return d.DialContext, s.upstream, nil
+}
+
+var errRebuilding = errors.New("upstream is not running")
 
 func (s *state) currentUpstream() endpoint {
 	s.mu.Lock()
@@ -151,13 +186,11 @@ func (s *state) recordRtt(d time.Duration) {
 }
 
 func (s *state) probe() (int, error) {
-	s.mu.Lock()
-	running := s.ln != nil
-	s.mu.Unlock()
-	if !running {
+	dial, ep, err := s.route()
+	if err != nil {
 		return 0, errors.New("helper proxy is not running")
 	}
-	return probeUpstream(s.dialer(), s.currentUpstream())
+	return probeUpstream(dial, ep)
 }
 
 func (s *state) status() map[string]any {
@@ -185,8 +218,14 @@ func (s *state) status() map[string]any {
 	out["failedHosts"] = len(hosts)
 	out["gateOpen"] = s.gate.isOpen()
 	s.mu.Lock()
-	wg := s.wg
+	wg, ss := s.wg, s.socks
 	s.mu.Unlock()
+	if ss != nil {
+		// The SOCKS front's own counters span upstream restarts (they belong to hev's side).
+		out["socksAccepted"] = ss.accepted.Load()
+		out["socksOpen"] = ss.open.Load()
+		out["staleFakeIps"] = ss.staleFake.Load()
+	}
 	if wg != nil {
 		if hs := wg.handshake(); !hs.IsZero() {
 			out["handshakeAgeSec"] = int(time.Since(hs).Seconds())
@@ -265,7 +304,11 @@ func (s *state) dialTarget(target string) (net.Conn, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	host, _, _ := net.SplitHostPort(target)
-	up, err := dialUpstream(ctx, s.dialer(), s.currentUpstream(), target, s.recordRtt)
+	dial, ep, err := s.route()
+	if err != nil {
+		return nil, err
+	}
+	up, err := dialUpstream(ctx, dial, ep, target, s.recordRtt)
 	if err != nil {
 		var refused *refusedError
 		if !errors.As(err, &refused) {

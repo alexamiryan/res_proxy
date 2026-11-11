@@ -43,13 +43,11 @@ func (s *state) proxyClient() *http.Client {
 		Transport: &http.Transport{
 			Proxy: nil,
 			DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
-				s.mu.Lock()
-				running := s.ln != nil
-				s.mu.Unlock()
-				if !running {
+				dial, ep, err := s.route()
+				if err != nil {
 					return nil, errors.New("relay is not running")
 				}
-				return dialUpstream(ctx, s.dialer(), s.currentUpstream(), addr, s.recordRtt)
+				return dialUpstream(ctx, dial, ep, addr, s.recordRtt)
 			},
 			TLSHandshakeTimeout: 15 * time.Second,
 			DisableKeepAlives:   true, // a new session must never reuse a connection of the old one

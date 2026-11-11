@@ -46,6 +46,8 @@ final class TunnelController {
     let store = SharedStore.shared
     private let lock = AsyncLock()
     private let hev = Hev()
+    /// Repair reasons starting with this restart hev; no other repair does.
+    private static let engineReason = "tunnel engine"
 
     private(set) var status = TunnelStatus()
     private var profile: Profile?
@@ -364,14 +366,15 @@ final class TunnelController {
     }
 
     /// Re-reads the profile (credentials, gateway, protocol) and restarts the upstream. False if it couldn't.
-    private func rebuild() async -> Bool {
+    /// hev keeps running unless `restartEngine` (see `startUpstream`).
+    private func rebuild(restartEngine: Bool = false) async -> Bool {
         let s = store.settings()
         guard let acc = store.account(s.provider), !acc.username.isEmpty else { return false }
         let p = Profile(account: acc, settings: s)
         profile = p
         update { $0.profileName = "\(p.provider.label) · \(s.location.label)" }
         do {
-            try await startUpstream(p)
+            try await startUpstream(p, restartEngine: restartEngine)
             return true
         } catch {
             log.warning("upstream restart failed: \(error.localizedDescription)")
@@ -425,22 +428,29 @@ final class TunnelController {
         return e
     }
 
-    /// Relay + upstream (+ WireGuard when chaining) in the Go bridge, then hev on the utun.
-    private func startUpstream(_ p: Profile) async throws {
+    /// Relay + upstream (+ WireGuard when chaining) in the Go bridge, then hev on the utun. A running hev is kept
+    /// (unless `restartEngine`): the relay's SOCKS front keeps its port and credentials, and only the upstream
+    /// behind it is replaced. Restarting hev empties its fake-IP DNS table, and every address apps still have cached
+    /// (browsers keep them for about a minute) then points nowhere or at a different site, while our own checks,
+    /// which don't go through the TUN, stay green. While the upstream is down, the front refuses connections.
+    private func startUpstream(_ p: Profile, restartEngine: Bool = false) async throws {
         if chainBroken { throw UserError("VPN is not available") }
-        hev.stop()
+        if restartEngine || hev.died { hev.stop() }
         upstreamUp = false
         let ep = try endpoint(p)
         var args: [String: Any] = ["upstream": Bridge.endpointJSON(ep), "token": randomId(24)]
         if let cfg = chainConfig { args["wg"] = cfg; chainStartedAt = Date() }
         _ = try await Bridge.call("start", args)
         if gateOpen { _ = try? await Bridge.call("gate", ["open": true]) }
-        socksUser = randomId(16); socksPass = randomId(24)
+        // Same credentials: the bridge keeps the running front (same port). New ones only for a new hev.
+        if !hev.running { socksUser = randomId(16); socksPass = randomId(24) }
         let socks = try await Bridge.call("socks", ["user": socksUser, "pass": socksPass, "lanDirect": bypassLan])
         guard let port = socks["port"] as? Int else { throw UserError("Relay didn't start") }
         upstreamUp = true
+        if hev.running && hev.socksPort == port { return }
         if tunFd < 0 { tunFd = rp_find_tun_fd() }
         guard tunFd >= 0 else { throw UserError("Couldn't find the tunnel interface") }
+        if hev.running { log.info("relay port changed, restarting tunnel engine") }
         hev.start(fd: tunFd, socksPort: port, user: socksUser, pass: socksPass)
     }
 
@@ -521,7 +531,7 @@ final class TunnelController {
             chainBroken = false
             guard await reloadChain() else { return }
             builtWith = keys()
-            if await rebuild() {
+            if await rebuild(restartEngine: reason.hasPrefix(Self.engineReason)) {
                 update {
                     $0.phase = .CONNECTED
                     if retry { $0.message = nil } else { $0.repairs += 1; $0.message = "Connection repaired (\(reason))" }
@@ -578,6 +588,10 @@ final class TunnelController {
         var failsInStreak = 0
         var quietSince: Date?
         var appUpAtQuiet: Int64 = 0
+        var acceptedAtQuiet = -1
+        var engineDeadLogged = false
+        var staleSeen = 0
+        var staleLoggedAt = Date.distantPast
         while !Task.isCancelled {
             try? await Task.sleep(nanoseconds: 5_000_000_000)
             if Task.isCancelled { return }
@@ -603,12 +617,30 @@ final class TunnelController {
                 log.info("relay: \(failsInStreak) failures, no successes; last: \(st["lastError"] as? String ?? "")")
             }
 
-            // 2. Tunnel engine stuck: apps keep sending, but no connection reaches the relay.
-            if hev.running {
-                let appUp = hevLast.1
-                if newOk + newFail > 0 || !gateOpen { quietSince = nil }
-                else if quietSince == nil { quietSince = now; appUpAtQuiet = appUp }
-                else if now.timeIntervalSince(quietSince!) > 30 && appUp - appUpAtQuiet > 20_000 { suspect = "tunnel engine stalled"; quietSince = nil }
+            // 2. Tunnel engine: its thread must be alive, and apps' packets must turn into relay connections. With no
+            //    relay connection open or opened for 30 s, everything apps send is new connections that never arrive.
+            if hev.died {
+                if !engineDeadLogged { log.warning("tunnel engine stopped by itself") }
+                engineDeadLogged = true
+                suspect = "\(Self.engineReason) stopped"
+            } else if hev.running, let accepted = st["socksAccepted"] as? Int {
+                engineDeadLogged = false
+                let open = st["socksOpen"] as? Int ?? 0
+                let appUp = hevLast.1 // apps' upload: packets hev read from the TUN
+                if accepted != acceptedAtQuiet || open > 0 || !gateOpen || quietSince == nil {
+                    quietSince = now; acceptedAtQuiet = accepted; appUpAtQuiet = appUp
+                } else if now.timeIntervalSince(quietSince!) > 30 {
+                    if appUp - appUpAtQuiet > 8_000 {
+                        log.info("tunnel engine: apps sent \(appUp - appUpAtQuiet) B in \(Int(now.timeIntervalSince(quietSince!))) s, no relay connection")
+                        suspect = "\(Self.engineReason) stalled"
+                    }
+                    quietSince = nil
+                }
+            }
+            if let stale = st["staleFakeIps"] as? Int, stale < staleSeen { staleSeen = stale } // new front, new count
+            if let stale = st["staleFakeIps"] as? Int, stale > staleSeen, now.timeIntervalSince(staleLoggedAt) > 60 {
+                log.info("relay: \(stale - staleSeen) connection(s) to fake IPs the tunnel engine no longer knows")
+                staleSeen = stale; staleLoggedAt = now
             }
 
             // 3. VPN: WireGuard re-handshakes every 2 minutes; an old handshake means the VPN path is dead.
@@ -642,7 +674,8 @@ final class TunnelController {
             do {
                 let r = try await Bridge.call("probe")
                 fails = 0
-                if !hev.running, let p = profile { _ = p; await lock.run { _ = await rebuild() } }
+                // Upstream up but hev never started (e.g. the utun wasn't found): start it.
+                if !hev.running && !hev.died && profile != nil { await lock.run { _ = await rebuild() } }
                 if status.phase == .PROXY_DOWN {
                     update { $0.phase = .CONNECTED; $0.message = "Proxy reachable again" }
                     if (status.exitIp == nil || !gateOpen) && checkTask == nil { launchCheck(force: false) }
@@ -650,7 +683,8 @@ final class TunnelController {
                 update { $0.latencyMs = r["ms"] as? Int }
                 if let s = suspect {
                     failingSince = nil; failsInStreak = 0
-                    await repair(s)
+                    // A dead engine leaves apps with nothing at all: don't wait out the repair rate limit.
+                    await repair(s, force: hev.died)
                 }
             } catch {
                 fails += 1

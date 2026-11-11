@@ -121,3 +121,97 @@ func TestLanTargets(t *testing.T) {
 		}
 	}
 }
+
+// socksConnectIP: SOCKS5 CONNECT to an IPv4 address; returns the reply code.
+func socksConnectIP(t *testing.T, port int, user, pass string, ip [4]byte, p uint16) byte {
+	t.Helper()
+	c, err := net.Dial("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Close()
+	c.SetDeadline(time.Now().Add(15 * time.Second))
+	br := bufio.NewReader(c)
+	c.Write([]byte{5, 1, 2})
+	var m [2]byte
+	io.ReadFull(br, m[:])
+	c.Write(append(append(append([]byte{1, byte(len(user))}, user...), byte(len(pass))), pass...))
+	var a [2]byte
+	io.ReadFull(br, a[:])
+	req := append([]byte{5, 1, 0, 1}, ip[:]...)
+	req = binary.BigEndian.AppendUint16(req, p)
+	c.Write(req)
+	var rep [10]byte
+	if _, err := io.ReadFull(br, rep[:]); err != nil {
+		t.Fatalf("reply: %v", err)
+	}
+	return rep[1]
+}
+
+// The SOCKS front hev talks to keeps its port and credentials across upstream restarts (hev keeps running, so its
+// fake-IP DNS table stays valid), refuses connections while the upstream is down, and refuses fake IPs at once.
+func TestSocksFrontSurvivesUpstreamRestart(t *testing.T) {
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { io.WriteString(w, "hello") }))
+	defer target.Close()
+	targetHost := strings.TrimPrefix(target.URL, "http://")
+	up, err := testproxy.Start("127.0.0.1:0", "socks5", "user", "pass")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer up.Close()
+	h, ps, _ := net.SplitHostPort(up.Addr())
+	p, _ := strconv.Atoi(ps)
+	ep := endpoint{Host: h, Port: p, Protocol: "SOCKS5", Username: "user", Password: "pass"}
+
+	s := newState()
+	defer s.stopAll()
+	if _, err := s.start(ep, "", "tok"); err != nil {
+		t.Fatal(err)
+	}
+	sp, err := s.startSocks("hev", "secret", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, body := socksGet(t, sp, "hev", "secret", targetHost); code != 0 || body != "hello" {
+		t.Fatalf("first upstream: code %d body %q", code, body)
+	}
+
+	// Upstream down (as during a rebuild): the front still answers but refuses, never dials anything.
+	s.stopUpstream()
+	if code, _ := socksGet(t, sp, "hev", "secret", targetHost); code != 1 {
+		t.Fatalf("while rebuilding: code %d, want 1", code)
+	}
+
+	// Restart: same credentials keep the same port.
+	if _, err := s.start(ep, "", "tok2"); err != nil {
+		t.Fatal(err)
+	}
+	sp2, err := s.startSocks("hev", "secret", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if sp2 != sp {
+		t.Fatalf("SOCKS port changed across restart: %d → %d", sp, sp2)
+	}
+	if code, body := socksGet(t, sp, "hev", "secret", targetHost); code != 0 || body != "hello" {
+		t.Fatalf("after restart: code %d body %q", code, body)
+	}
+
+	// Fake IPs (hev's 100.64/10) are refused with "host unreachable" and counted.
+	if code := socksConnectIP(t, sp, "hev", "secret", [4]byte{100, 64, 0, 9}, 443); code != 4 {
+		t.Fatalf("fake IP: code %d, want 4", code)
+	}
+	st := s.status()
+	if st["staleFakeIps"].(int64) != 1 || st["socksAccepted"].(int64) < 4 {
+		t.Fatalf("status %v", st)
+	}
+
+	// New credentials (hev restarted with them) get a new front.
+	sp3, err := s.startSocks("hev2", "other", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code, _ := socksGet(t, sp3, "hev2", "other", targetHost); code != 0 {
+		t.Fatalf("new front: code %d", code)
+	}
+}

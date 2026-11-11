@@ -15,6 +15,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -74,15 +75,24 @@ func (g *gate) wait(d time.Duration) bool {
 type socksServer struct {
 	ln         net.Listener
 	user, pass string
-	lanDirect  bool
-	conns      sync.Map // net.Conn → struct{}, apps' connections (dropped when the gate closes)
+	lanDirect  atomic.Bool
+	conns      sync.Map     // net.Conn → struct{}, apps' connections and their upstreams (dropped when the gate closes)
+	accepted   atomic.Int64 // connections hev opened, answered or not
+	open       atomic.Int64 // apps' connections open right now
+	staleFake  atomic.Int64 // CONNECTs to fake IPs hev no longer maps to a name
 }
 
-// startSocks starts the SOCKS5 front on 127.0.0.1 (random port, username/password auth).
+// startSocks starts the SOCKS5 front on 127.0.0.1 (random port, username/password auth). If it already runs with
+// the same credentials it keeps its port (hev, configured with them, keeps running): only lanDirect is updated.
 func (s *state) startSocks(user, pass string, lanDirect bool) (int, error) {
 	s.mu.Lock()
 	running := s.ln != nil
 	old := s.socks
+	if old != nil && old.user == user && old.pass == pass {
+		old.lanDirect.Store(lanDirect)
+		s.mu.Unlock()
+		return old.ln.Addr().(*net.TCPAddr).Port, nil
+	}
 	s.socks = nil
 	s.mu.Unlock()
 	if !running {
@@ -95,7 +105,8 @@ func (s *state) startSocks(user, pass string, lanDirect bool) (int, error) {
 	if err != nil {
 		return 0, err
 	}
-	ss := &socksServer{ln: ln, user: user, pass: pass, lanDirect: lanDirect}
+	ss := &socksServer{ln: ln, user: user, pass: pass}
+	ss.lanDirect.Store(lanDirect)
 	s.mu.Lock()
 	s.socks = ss
 	s.mu.Unlock()
@@ -143,7 +154,10 @@ func socksReply(c net.Conn, code byte) {
 
 func (s *state) serveSocks(ss *socksServer, c net.Conn) {
 	ss.conns.Store(c, struct{}{})
+	ss.accepted.Add(1)
+	ss.open.Add(1)
 	defer func() {
+		ss.open.Add(-1)
 		ss.conns.Delete(c)
 		c.Close()
 	}()
@@ -229,6 +243,13 @@ func (s *state) serveSocks(ss *socksServer, c net.Conn) {
 		socksReply(c, 7)
 		return
 	}
+	if isFakeIP(host) {
+		// Only hev hands these out; one it couldn't map back to a name (its table was reset, or the app cached the
+		// address past its TTL) is useless to any proxy.
+		ss.staleFake.Add(1)
+		socksReply(c, 4)
+		return
+	}
 	target := net.JoinHostPort(host, strconv.Itoa(int(port)))
 
 	// Gate: hold new connections while the IP is being checked, then refuse.
@@ -238,7 +259,7 @@ func (s *state) serveSocks(ss *socksServer, c net.Conn) {
 	}
 	var up net.Conn
 	var err error
-	if ss.lanDirect && isLanTarget(host) {
+	if ss.lanDirect.Load() && isLanTarget(host) {
 		up, err = dialLan(host, int(port))
 		if errors.Is(err, errNotLan) {
 			up, err = s.dialTarget(target)
@@ -309,10 +330,18 @@ func isLocalName(h string) bool {
 	return false
 }
 
+var fakeIPRange = netip.MustParsePrefix("100.64.0.0/10")
+
+// isFakeIP: an address from hev's fake-IP DNS range (100.64/10). hev normally sends the hostname instead.
+func isFakeIP(host string) bool {
+	a, err := netip.ParseAddr(host)
+	return err == nil && fakeIPRange.Contains(a.Unmap())
+}
+
 func isLanTarget(host string) bool {
 	if a, err := netip.ParseAddr(host); err == nil {
 		// 100.64/10 is hev's fake-IP range; it only arrives as an address when mapping failed: not LAN.
-		if netip.MustParsePrefix("100.64.0.0/10").Contains(a.Unmap()) {
+		if fakeIPRange.Contains(a.Unmap()) {
 			return false
 		}
 		return isPrivate(a)
