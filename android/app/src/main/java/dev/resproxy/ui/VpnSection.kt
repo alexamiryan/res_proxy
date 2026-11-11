@@ -433,7 +433,11 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
     val mullvad by c.vpn.mullvad.collectAsState(initial = null)
     val relays by c.mullvad.relays.collectAsState()
     var query by remember { mutableStateOf("") }
-    var expanded by remember { mutableStateOf(setOf<String>()) }
+    // Opens on the current choice: a selected city or server shows its country (and server list).
+    var expanded by remember {
+        val cur = (VpnExit.parse(s.vpnExit) as? VpnExit.Mullvad)?.code.orEmpty().split('-')
+        mutableStateOf(if (!s.chainEnabled || cur.size < 2) emptySet() else setOf(cur[0], cur[0] + "-" + cur[1]))
+    }
     LaunchedEffect(mullvad != null) { if (mullvad != null) runCatching { c.mullvad.refreshRelays() } }
     val selected = if (s.chainEnabled) s.vpnExit else ""
     val ms = c.latency.state.collectAsState().value.results
@@ -497,14 +501,32 @@ fun VpnPickerDialog(s: AppSettings, onDismiss: () -> Unit, onManage: () -> Unit,
                             if (open || cityHits.isNotEmpty()) {
                                 val shown = if (open && (countryHit || q.isEmpty())) cities else cityHits
                                 shown.forEach { (loc, rs) ->
+                                    val cityOpen = loc in expanded
                                     item(key = "ml$loc") {
-                                        PickRow("      ${rs.first().city}", withMs("      ${rs.size} servers", best(rs)), selected == VpnExit.mullvad(loc)) {
-                                            onPick(true, VpnExit.mullvad(loc))
+                                        PickRow(
+                                            "      ${rs.first().city}",
+                                            withMs("      ${rs.size} server${if (rs.size == 1) "" else "s"}", best(rs)),
+                                            selected == VpnExit.mullvad(loc),
+                                            trailing = {
+                                                IconButton(onClick = { expanded = if (cityOpen) expanded - loc else expanded + loc }) {
+                                                    Icon(if (cityOpen) Icons.Default.ExpandLess else Icons.Default.ExpandMore, "Servers")
+                                                }
+                                            },
+                                        ) { onPick(true, VpnExit.mullvad(loc)) }
+                                    }
+                                    // A specific server: profiles or phones sharing a Mullvad device need different ones.
+                                    if (cityOpen) rs.sortedBy { it.hostname }.forEach { r ->
+                                        item(key = "ms${r.hostname}") {
+                                            PickRow(
+                                                "            ${r.hostname}",
+                                                withMs("            " + if (r.owned) "Mullvad-owned" else "Rented", ms[VpnExit.mullvad(r.hostname)]),
+                                                selected == VpnExit.mullvad(r.hostname),
+                                            ) { onPick(true, VpnExit.mullvad(r.hostname)) }
                                         }
                                     }
                                 }
                             }
-                            serverHits.forEach { r ->
+                            serverHits.filter { it.location !in expanded || !open }.forEach { r ->
                                 item(key = "mh${r.hostname}") {
                                     PickRow("      ${r.hostname}", withMs("      ${r.city}" + if (r.owned) " · Mullvad-owned" else "", ms[VpnExit.mullvad(r.hostname)]), selected == VpnExit.mullvad(r.hostname)) {
                                         onPick(true, VpnExit.mullvad(r.hostname))

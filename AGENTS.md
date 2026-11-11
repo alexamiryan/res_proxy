@@ -324,7 +324,8 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   location is chosen by a per-install slot (`AppContainer.vpnSlot`: ANDROID_ID hash + a shift kept in
   `files/vpn_slot`, `MullvadClient.pick(code, relays, slot)`), and 3 renewals within 130 s move the install to another
   relay of the location (`nextVpnServer`, repair "VPN server was shared with another profile"). With a fixed
-  hostname, a one-relay location or an imported profile it can only warn. The `VPN:` log line names relay and device.
+  hostname (the VPN picker lists each city's servers, so installs can be pinned to different ones), a one-relay
+  location or an imported profile it can only warn. The `VPN:` log line names relay and device.
   Chrome and iOS still pick by weight and don't detect this.
 - Network changes: `registerDefaultNetworkCallback` didn't fire usefully for the excluded VPN app; use a
   `NOT_VPN` + `INTERNET` `NetworkRequest` and treat "new network after a loss" as a switch.
