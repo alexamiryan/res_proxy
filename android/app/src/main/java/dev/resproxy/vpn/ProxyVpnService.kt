@@ -444,6 +444,7 @@ class ProxyVpnService : VpnService() {
             val (name, cfg) = container.resolveVpn(s)!!
             chainConfig = cfg
             chainBroken = false
+            log("VPN: $name" + (container.vpn.mullvad()?.device?.takeIf { VpnExit.parse(s.vpnExit) is VpnExit.Mullvad }?.let { ", device ${it.name}" } ?: ""))
             TunnelState.update { it.copy(chainName = name, vpnPingMs = null) }
             true
         } catch (e: Exception) {
@@ -857,6 +858,11 @@ class ProxyVpnService : VpnService() {
         var staleSeen = relayHealth.staleFakeIps.get()
         var staleLoggedAt = 0L
         var summaryAt = System.currentTimeMillis()
+        var lastHandshakeAt = 0L
+        var hsChainStart = 0L
+        val recentHandshakes = ArrayDeque<Long>()
+        var keyClashWarned = false
+        var handshakes = 0
         while (scope.isActive) {
             delay(TICK_MS)
             if (kicked) { kicked = false; lastProbe = 0; fails = minOf(fails, 1) }
@@ -909,16 +915,41 @@ class ProxyVpnService : VpnService() {
                 log("relay: ${stale - staleSeen} connection(s) to fake IPs the tunnel engine no longer knows")
                 staleSeen = stale; staleLoggedAt = now
             }
-            if (now - summaryAt > 15 * 60_000L) {
+            if (now - summaryAt > SUMMARY_MS) {
                 summaryAt = now
-                log("health: relay ${relayHealth.summary()}, open ${bridge?.openCount ?: 0}; engine ↓ ${hevLast.first} ↑ ${hevLast.second}")
+                log("health: relay ${relayHealth.summary()}, open ${bridge?.openCount ?: 0}; engine ↓ ${hevLast.first} ↑ ${hevLast.second}" +
+                    if (chainConfig != null) "; VPN handshakes $handshakes" else "")
+                handshakes = 0
             }
 
             // 3. VPN: WireGuard re-handshakes every 2 minutes; an old handshake means the VPN path is dead.
             val chain = chainConfig
             if (chain != null && WireGuard.running) {
-                val age = WireGuard.handshakeAgeSec()
+                val hsAt = WireGuard.handshakeAt()
+                if (chainStartedAt != hsChainStart) { hsChainStart = chainStartedAt; lastHandshakeAt = 0; recentHandshakes.clear() }
+                if (hsAt != null && hsAt != lastHandshakeAt) {
+                    if (lastHandshakeAt != 0L) { handshakes++; recentHandshakes.addLast(now) }
+                    lastHandshakeAt = hsAt
+                }
+                val age = hsAt?.let { now / 1000 - it }
                 if ((age == null && now - chainStartedAt > 20_000) || (age != null && age > 200)) suspect = "VPN handshake lost"
+                // WireGuard renews its handshake every 2 minutes. Much more often means another tunnel with the same
+                // key (a Mullvad device shared with another phone profile or phone) is on this server: the server
+                // talks to one of them at a time, so both keep losing their connections.
+                while (recentHandshakes.isNotEmpty() && now - recentHandshakes.first() > KEY_CLASH_WINDOW_MS) recentHandshakes.removeFirst()
+                if (recentHandshakes.size >= KEY_CLASH_HANDSHAKES) {
+                    val secs = (now - recentHandshakes.first()) / 1000
+                    recentHandshakes.clear()
+                    if (container.nextVpnServer()) {
+                        log("VPN: $KEY_CLASH_HANDSHAKES handshakes in $secs s, the key is in use on this server by another install: switching server")
+                        repair(KEY_CLASH_REASON, force = true)
+                        continue
+                    } else if (!keyClashWarned) {
+                        keyClashWarned = true
+                        log("VPN: $KEY_CLASH_HANDSHAKES handshakes in $secs s, the key is in use on this server by another install; no other server to switch to")
+                        TunnelState.update { it.copy(message = "Another phone or profile uses this VPN key on the same server, so connections keep dropping. Pick a different VPN server in one of them.") }
+                    }
+                }
                 if (now - lastPing > 10_000) {
                     lastPing = now
                     val target = chain.dns.firstOrNull { !it.contains(':') } ?: chain.dns.firstOrNull()
@@ -1134,6 +1165,11 @@ class ProxyVpnService : VpnService() {
         /** Probes in a row where the proxy answered but couldn't reach the target: the sticky exit node is gone. */
         private const val DEAD_EXIT_PROBES = 2
         /** Repair reasons starting with this restart hev itself; all other repairs leave it (and its DNS table) alone. */
+        private const val SUMMARY_MS = 15 * 60_000L
+        /** This many handshake renewals within the window (normally one per 2 minutes) means the key is shared. */
+        private const val KEY_CLASH_HANDSHAKES = 3
+        private const val KEY_CLASH_WINDOW_MS = 130_000L
+        private const val KEY_CLASH_REASON = "VPN server was shared with another profile"
         private const val ENGINE_REASON = "tunnel engine"
     }
 }

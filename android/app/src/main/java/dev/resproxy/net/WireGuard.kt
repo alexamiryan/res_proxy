@@ -136,12 +136,14 @@ object WireGuard {
         running = false
     }
 
-    /** Seconds since the last handshake, or null if none yet. */
-    fun handshakeAgeSec(): Long? {
+    /** Unix time (s) of the last handshake, or null if none yet. */
+    fun handshakeAt(): Long? {
         if (!running) return null
-        val hs = nativeStatus().split(',').firstOrNull()?.toLongOrNull()?.takeIf { it > 0 } ?: return null
-        return System.currentTimeMillis() / 1000 - hs
+        return nativeStatus().split(',').firstOrNull()?.toLongOrNull()?.takeIf { it > 0 }
     }
+
+    /** Seconds since the last handshake, or null if none yet. */
+    fun handshakeAgeSec(): Long? = handshakeAt()?.let { System.currentTimeMillis() / 1000 - it }
 
     /** In-tunnel ICMP round trip to [ip] (e.g. the VPN's DNS server, which sits on the VPN server) in ms. */
     fun ping(ip: String): Long? {

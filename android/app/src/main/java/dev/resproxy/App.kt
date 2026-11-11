@@ -156,11 +156,33 @@ class AppContainer(context: Context) {
                 }
                 val acc = cur?.takeIf { it.device != null } ?: mullvadLogin()
                 val relays = runCatching { mullvad.refreshRelays() }.getOrElse { err -> mullvad.relays.value.ifEmpty { throw err } }
-                val relay = MullvadClient.pick(e.code, relays) ?: throw IOException("No Mullvad server matches “${e.code}”")
+                val relay = MullvadClient.pick(e.code, relays, vpnSlot()) ?: throw IOException("No Mullvad server matches “${e.code}”")
                 "Mullvad ${relay.city} · ${relay.hostname}" to WireGuardConfig.parse(MullvadClient.wgQuick(acc.device!!, relay))
             }
             null -> throw IOException("Choose a VPN server on the home screen")
         }
+    }
+
+    // Which of a location's Mullvad servers this install uses: different per phone and per Android user (ANDROID_ID),
+    // moved on when another install with the same Mullvad device turns out to be on the same server.
+    private val vpnSlotFile = File(context.filesDir, "vpn_slot")
+    private val vpnSeed = runCatching {
+        android.provider.Settings.Secure.getString(context.contentResolver, android.provider.Settings.Secure.ANDROID_ID)
+    }.getOrNull().orEmpty().hashCode()
+    @Volatile private var vpnShift = runCatching { vpnSlotFile.readText().trim().toInt() }.getOrDefault(0)
+
+    fun vpnSlot(): Int = Math.floorMod(vpnSeed, 1 shl 20) + vpnShift
+
+    /** Moves this install to another server of the selected Mullvad location; false when there is no other one. */
+    suspend fun nextVpnServer(): Boolean {
+        val s = settings.current()
+        val e = VpnExit.parse(s.vpnExit) as? VpnExit.Mullvad ?: return false
+        if (!s.chainEnabled) return false
+        val n = MullvadClient.candidates(e.code, mullvad.relays.value).size
+        if (n < 2) return false
+        vpnShift = Math.floorMod(vpnShift + 1 + (Math.random() * (n - 1)).toInt(), 1 shl 20)
+        runCatching { vpnSlotFile.writeText(vpnShift.toString()) }
+        return true
     }
 
     /** Connection spec for the selected provider, or null when no account is set up. */

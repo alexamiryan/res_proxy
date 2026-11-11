@@ -72,6 +72,12 @@ class VpnFeaturesTest {
         assertEquals("se-sto-wg-002", MullvadClient.pick("se-sto", relays)?.hostname)
         assertTrue(MullvadClient.pick("se", relays)!!.countryCode == "se")
         assertNull(MullvadClient.pick("de", relays))
+        // With a slot the choice is stable, and different slots spread over a location's servers.
+        val n = MullvadClient.candidates("se", relays).size
+        assertEquals(MullvadClient.pick("se", relays, 5), MullvadClient.pick("se", relays, 5))
+        assertEquals(n, (0 until n).map { MullvadClient.pick("se", relays, it)!!.hostname }.toSet().size)
+        assertEquals(MullvadClient.pick("se", relays, 0), MullvadClient.pick("se", relays, n))
+        assertEquals("se-got-wg-001", MullvadClient.pick("se-got-wg-001", relays, 7)?.hostname)
         assertEquals("Sweden, Stockholm", MullvadClient.label("se-sto", relays))
         assertEquals("Sweden", MullvadClient.label("se", relays))
     }

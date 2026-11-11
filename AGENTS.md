@@ -311,6 +311,16 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   meter had them swapped, which also made the old "engine stalled" check watch downloads and fire during streaming.
   The check now needs: no relay connection open or opened for 30 s while apps sent > 8 KB, or hev's thread gone
   (`TProxyIsRunning`). The diagnostics log gets a `health:` relay summary every 15 min.
+- **One WireGuard key on one server works for one tunnel only.** Two installs sharing a Mullvad device (several
+  Android users on one phone, each with its own tunnel, all running at once) that land on the same relay keep taking
+  the session from each other: the server answers one endpoint per key. It looks like "connected, clean IP, hangs
+  every minute, Connection reset", worse right after switching Android user (both sides busy). The tell is the
+  handshake count in the `health:` log line: one per 2 minutes is normal, 3–4 is a clash. Android: the relay for a
+  location is chosen by a per-install slot (`AppContainer.vpnSlot`: ANDROID_ID hash + a shift kept in
+  `files/vpn_slot`, `MullvadClient.pick(code, relays, slot)`), and 3 renewals within 130 s move the install to another
+  relay of the location (`nextVpnServer`, repair "VPN server was shared with another profile"). With a fixed
+  hostname, a one-relay location or an imported profile it can only warn. The `VPN:` log line names relay and device.
+  Chrome and iOS still pick by weight and don't detect this.
 - Network changes: `registerDefaultNetworkCallback` didn't fire usefully for the excluded VPN app; use a
   `NOT_VPN` + `INTERNET` `NetworkRequest` and treat "new network after a loss" as a switch.
 - Reputation reports are cached per IP for 1 h, and a sticky session keeps the same IP. When API keys change

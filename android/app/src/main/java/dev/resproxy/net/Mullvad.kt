@@ -181,11 +181,21 @@ class MullvadClient(private val cacheFile: File) {
                 MullvadDeviceInfo(o.str("id") ?: return@mapNotNull null, o.str("name").orEmpty(), o.str("created").orEmpty())
             }.sortedBy { it.created }
 
-        /** [code] is a hostname, a `country-city` location, or a country code; picks by weight. */
-        fun pick(code: String, relays: List<MullvadRelay>): MullvadRelay? {
-            relays.firstOrNull { it.hostname == code }?.let { return it }
-            val matches = relays.filter { it.location == code }.ifEmpty { relays.filter { it.countryCode == code } }
+        /** Relays [code] can mean (a hostname, a `country-city` location, or a country code), in a stable order. */
+        fun candidates(code: String, relays: List<MullvadRelay>): List<MullvadRelay> {
+            relays.firstOrNull { it.hostname == code }?.let { return listOf(it) }
+            return relays.filter { it.location == code }.ifEmpty { relays.filter { it.countryCode == code } }.sortedBy { it.hostname }
+        }
+
+        /**
+         * Picks by weight, or with a [slot] always the same relay for the same slot. Installs sharing one Mullvad
+         * device need different relays: a WireGuard server talks to one endpoint per key, so two tunnels with the same
+         * key on one server keep taking the session from each other.
+         */
+        fun pick(code: String, relays: List<MullvadRelay>, slot: Int? = null): MullvadRelay? {
+            val matches = candidates(code, relays)
             if (matches.isEmpty()) return null
+            if (slot != null) return matches[Math.floorMod(slot, matches.size)]
             val total = matches.sumOf { it.weight.coerceAtLeast(1) }
             var r = (Math.random() * total).toInt()
             for (m in matches) { r -= m.weight.coerceAtLeast(1); if (r < 0) return m }
