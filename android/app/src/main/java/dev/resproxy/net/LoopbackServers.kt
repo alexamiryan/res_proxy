@@ -13,6 +13,10 @@ import java.net.URI
 import java.util.Collections
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
+import java.util.concurrent.ScheduledExecutorService
+import java.util.concurrent.ScheduledFuture
+import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import dev.resproxy.data.Protocol
 
@@ -29,11 +33,23 @@ abstract class LoopbackServer(private val name: String) {
 
     val port: Int get() = server.localPort
 
+    /** Connections currently open (clients and their upstream sockets). */
+    val openCount: Int get() = open.size
+
     fun start(): LoopbackServer {
         running = true
         Thread({
             while (running) {
-                val client = try { server.accept() } catch (e: IOException) { break }
+                val client = try {
+                    server.accept()
+                } catch (e: IOException) {
+                    // A failed accept (a client that gave up while queued, out of file descriptors, ...) must not end
+                    // the loop: apps' connections would then hang with nothing noticing.
+                    if (!running || server.isClosed) break
+                    Log.w(TAG, "$name accept: ${e.message}")
+                    runCatching { Thread.sleep(50) }
+                    continue
+                }
                 open += client
                 pool.execute {
                     try {
@@ -65,20 +81,36 @@ abstract class LoopbackServer(private val name: String) {
 
     protected abstract fun handle(client: Socket)
 
-    /** Bidirectional copy; returns (bytes up, bytes down) once both directions have finished. */
+    /**
+     * Bidirectional copy; returns (bytes up, bytes down) once both directions have finished. Once the client is done
+     * sending, a remote that stays silent for [HALF_CLOSE_IDLE_MS] is closed: one that silently died (no FIN, no RST,
+     * e.g. a dead exit node or VPN path) would otherwise hold this connection and its threads forever.
+     */
     protected fun relay(
-        client: Socket, remote: Socket, clientIn: InputStream = client.getInputStream(), onFirstDown: () -> Unit = {},
+        client: Socket, remote: Socket, clientIn: InputStream = client.getInputStream(), upCount: AtomicLong = AtomicLong(),
+        onFirstDown: () -> Unit = {},
     ): Pair<Long, Long> {
         open += remote
+        val reaper = java.util.concurrent.atomic.AtomicReference<ScheduledFuture<*>?>()
+        val down = AtomicLong()
         try {
-            val upCount = AtomicLong()
-            val up = pool.submit { copy(clientIn, remote.getOutputStream(), bytesUp, upCount, null); runCatching { remote.shutdownOutput() } }
-            val down = AtomicLong()
+            val up = pool.submit {
+                copy(clientIn, remote.getOutputStream(), bytesUp, upCount, null)
+                runCatching { remote.shutdownOutput() }
+                var seen = down.get()
+                reaper.set(runCatching {
+                    timers.scheduleWithFixedDelay({
+                        val now = down.get()
+                        if (now == seen) remote.closeQuietly() else seen = now
+                    }, HALF_CLOSE_IDLE_MS, HALF_CLOSE_IDLE_MS, TimeUnit.MILLISECONDS)
+                }.getOrNull())
+            }
             copy(remote.getInputStream(), client.getOutputStream(), bytesDown, down, onFirstDown)
             runCatching { client.shutdownOutput() }
             runCatching { up.get() }
             return upCount.get() to down.get()
         } finally {
+            reaper.get()?.cancel(false)
             remote.closeQuietly(); open -= remote
         }
     }
@@ -100,6 +132,11 @@ abstract class LoopbackServer(private val name: String) {
 
     protected companion object {
         const val TAG = "ResProxy"
+        const val HALF_CLOSE_IDLE_MS = 120_000L
+        /** One timer thread for all relay watchdogs. */
+        val timers: ScheduledExecutorService = Executors.newSingleThreadScheduledExecutor { r ->
+            Thread(r, "relay-timer").apply { isDaemon = true }
+        }
     }
 }
 
@@ -108,10 +145,19 @@ abstract class LoopbackServer(private val name: String) {
  * from "apps' connections actually work".
  */
 class RelayHealth {
+    /** Connections the tunnel engine opened to the relay, whatever became of them. */
+    val accepted = AtomicLong()
     /** Connections whose upstream opened and that received data back. */
     val ok = AtomicLong()
-    /** Upstream refused/failed, or the app sent data and got nothing back before closing. */
+    /** Upstream failed, or the app sent data and got nothing back (within [LocalSocksServer.NO_RESPONSE_MS]). */
     val failed = AtomicLong()
+    /** The proxy answered but couldn't reach the target (SOCKS reply 1-8): the target's problem, not ours. */
+    val refused = AtomicLong()
+    /**
+     * Targets in the fake-IP range that the tunnel engine couldn't map back to a name: an app kept an address from
+     * before the engine restarted. Refused right away, so the app looks the name up again.
+     */
+    val staleFakeIps = AtomicLong()
     @Volatile var lastOkAt = 0L
     @Volatile var lastFailAt = 0L
     @Volatile var lastError: String? = null
@@ -128,6 +174,9 @@ class RelayHealth {
 
     /** Different targets that failed since [since]: one dead website must not look like a dead connection. */
     fun distinctFailedHosts(since: Long) = failedHosts.count { it.value >= since }
+
+    fun summary() = "accepted ${accepted.get()}, ok ${ok.get()}, failed ${failed.get()}, refused ${refused.get()}, " +
+        "stale fake IPs ${staleFakeIps.get()}" + (lastError?.let { "; last failure $it" } ?: "")
 }
 
 /**
@@ -136,7 +185,8 @@ class RelayHealth {
  * UDP ASSOCIATE is passed through to a SOCKS5 upstream when it is reached directly.
  */
 class LocalSocksServer(
-    private val upstream: Upstream,
+    /** Swappable: repairs keep this server (and its port), so the tunnel engine keeps running. Null: refuse. */
+    @Volatile var upstream: Upstream?,
     val health: RelayHealth = RelayHealth(),
     /** Internet traffic waits here until the exit IP is known to be clean; null = always open. */
     private val gate: TrafficGate? = null,
@@ -144,9 +194,11 @@ class LocalSocksServer(
     private val lanDirect: () -> Boolean = { false },
     private val lanResolve: (String) -> InetAddress? = { LanTargets.resolve(it) },
     private val gateWaitMs: Long = GATE_WAIT_MS,
+    private val noResponseMs: Long = NO_RESPONSE_MS,
 ) : LoopbackServer("socks-relay") {
 
     override fun handle(client: Socket) {
+        health.accepted.incrementAndGet()
         val inp = DataInputStream(client.getInputStream())
         val out = client.getOutputStream()
         if (inp.readUnsignedByte() != 5) return
@@ -170,6 +222,11 @@ class LocalSocksServer(
     }
 
     private fun connect(client: Socket, inp: DataInputStream, out: OutputStream, host: String, port: Int) {
+        if (isFakeDnsIp(host)) {
+            // Only the tunnel engine hands these out; one it can't map back to a name is useless to any proxy.
+            health.staleFakeIps.incrementAndGet()
+            out.write(reply(4)); return // host unreachable
+        }
         val lan = if (lanDirect()) lanResolve(host) else null
         if (lan != null) {
             val remote = Socket()
@@ -185,20 +242,34 @@ class LocalSocksServer(
             return
         }
         if (gate != null && !gate.await(gateWaitMs)) { out.write(reply(2)); return } // 2 = not allowed by ruleset
+        val up = upstream ?: run { out.write(reply(1)); return }
         val remote = try {
-            upstream.open(host, port)
+            up.open(host, port)
         } catch (e: IOException) {
-            if (e !is SocksRefusedException) health.failure(host, e.message) // target refused ≠ broken proxy
+            if (e is SocksRefusedException) health.refused.incrementAndGet() // target refused ≠ broken proxy
+            else health.failure(host, e.message)
             out.write(reply(if (e is SocksRefusedException) e.code else 5)); return
         }
         out.write(reply(0))
-        var gotData = false
-        val (up, _) = relay(client, remote, inp) { gotData = true; health.success() }
-        if (!gotData && up > 0) health.failure(host, "no response")
+        // Counted once: as soon as the app has waited noResponseMs for an answer, or when it gives up, whichever comes
+        // first. Apps keep dead connections open for minutes; waiting for them to close hid a dead connection.
+        val gotData = AtomicBoolean(false)
+        val counted = AtomicBoolean(false)
+        val upCount = AtomicLong()
+        val noResponse = Runnable {
+            if (!gotData.get() && upCount.get() > 0 && counted.compareAndSet(false, true)) health.failure(host, "no response")
+        }
+        val watchdog = runCatching { timers.schedule(noResponse, noResponseMs, TimeUnit.MILLISECONDS) }.getOrNull()
+        try {
+            relay(client, remote, inp, upCount = upCount) { gotData.set(true); if (counted.compareAndSet(false, true)) health.success() }
+        } finally {
+            watchdog?.cancel(false)
+        }
+        noResponse.run()
     }
 
     private fun udpAssociate(client: Socket, inp: DataInputStream, out: OutputStream) {
-        val ep = upstream.endpoint
+        val ep = upstream?.endpoint ?: run { out.write(reply(1)); return }
         if (gate != null && !gate.isOpen) { out.write(reply(2)); return }
         if (ep.protocol != Protocol.SOCKS5 || ep.host == "127.0.0.1") { out.write(reply(7)); return }
         val (ctrl, relayAddr) = try {
@@ -216,6 +287,15 @@ class LocalSocksServer(
     companion object {
         /** How long a new connection waits for a check in progress before it is refused (hev gives up after 10 s). */
         const val GATE_WAIT_MS = 8_000L
+        /** An app that sent data and got nothing back for this long has a dead connection. */
+        const val NO_RESPONSE_MS = 20_000L
+
+        /** hev's fake-IP DNS range (HevConfig mapdns: 100.64.0.0/10). */
+        fun isFakeDnsIp(host: String): Boolean {
+            val p = host.split('.')
+            if (p.size != 4 || p.any { it.toIntOrNull() !in 0..255 }) return false
+            return p[0] == "100" && p[1].toInt() in 64..127
+        }
     }
 }
 

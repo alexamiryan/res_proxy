@@ -34,6 +34,9 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
   of that, upstream hostnames are resolved for each connection (with DoH fallback), and `RelayHealth` sees
   whether apps' connections actually get answers. UDP ASSOCIATE is passed through only for a SOCKS5 upstream
   reached directly, without a chain.
+- hev keeps running across repairs, network switches, rotations and upstream settings changes: the relay
+  (`LocalSocksServer`) keeps its port and only its `upstream` is swapped (null = refuse while rebuilding). Only
+  `tunnel engine …` repairs and full reconnects restart hev. See the fake-IP gotcha below.
 - The app excludes itself from the VPN (`addDisallowedApplication(packageName)`), so relay, WireGuard,
   reputation and Mullvad API sockets go direct. With `ONLY_SELECTED` split mode the app simply isn't in the
   allowed list.
@@ -295,7 +298,19 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 - Users paste whole proxy lines or usernames with targeting params. Presets strip existing params, and the UI
   shows the base username.
 - SOCKS reply codes 1–8 (`SocksRefusedException`) mean the target failed, not the proxy; they don't count as
-  relay failures. Auto-repair needs failures across ≥2 distinct hosts with no successes for 20 s.
+  relay failures. Auto-repair needs failures across ≥2 distinct hosts with no successes for 20 s. A relay connection
+  where the app sent data and got nothing back counts as failed after 20 s (`NO_RESPONSE_MS`), not only when the app
+  finally closes it (apps keep dead connections open for minutes).
+- **Restarting hev breaks apps while showing all green.** hev's fake-IP DNS table (100.64/10, TTL 1 s) lives inside
+  hev and starts over on every restart, handing out the same addresses again in a new order. Browsers cache answers
+  for about a minute, so after a restart their cached addresses point nowhere or at a different site, while our probe
+  and IP check (which don't use the TUN) pass. Repairs used to restart hev every time (network switches, VPN handshake,
+  a false "engine stalled"), which looked like "connected, clean IP, 0 B/s, nothing loads" until a manual reconnect.
+  Don't restart hev unless hev itself is broken. The relay refuses fake IPs it is still handed (reply 4) and logs them.
+- hev's stats are from its own side: tx = read from the TUN (apps' upload), rx = written to it (download). The Android
+  meter had them swapped, which also made the old "engine stalled" check watch downloads and fire during streaming.
+  The check now needs: no relay connection open or opened for 30 s while apps sent > 8 KB, or hev's thread gone
+  (`TProxyIsRunning`). The diagnostics log gets a `health:` relay summary every 15 min.
 - Network changes: `registerDefaultNetworkCallback` didn't fire usefully for the excluded VPN app; use a
   `NOT_VPN` + `INTERNET` `NetworkRequest` and treat "new network after a loss" as a switch.
 - Reputation reports are cached per IP for 1 h, and a sticky session keeps the same IP. When API keys change
@@ -310,6 +325,8 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 
 ### iOS
 
+- Not fixed on iOS yet: `startUpstream` restarts hev on every rebuild (resets its fake-IP DNS, see the Android
+  gotcha) and `Hev.stats()` has download/upload swapped.
 - Network extensions are killed above ~50 MB. `bridge_ios.go` caps the Go heap (`SetMemoryLimit` 24 MB); WireGuard
   chaining runs a gVisor netstack in that budget.
 - `sys/kern_control.h` isn't in the iOS SDK: `TunFd.c` declares `ctl_info` / `sockaddr_ctl` / `CTLIOCGINFO` itself.

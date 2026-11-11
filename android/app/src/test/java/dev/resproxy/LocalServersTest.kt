@@ -9,6 +9,7 @@ import dev.resproxy.net.Upstream
 import dev.resproxy.provider.Endpoint
 import org.junit.After
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Before
 import org.junit.Test
@@ -90,6 +91,66 @@ class LocalServersTest {
             assertEquals(1L, health.failed.get())
         } finally {
             good.stop(); bad.stop()
+        }
+    }
+
+    @Test fun silentConnectionCountsAsFailureWhileStillOpen() {
+        val health = dev.resproxy.net.RelayHealth()
+        val bridge = LocalSocksServer(upstream(), health, noResponseMs = 300).start()
+        try {
+            Socks5Client.connect(Endpoint("127.0.0.1", bridge.port, Protocol.SOCKS5, "", ""), "example.com", 443, 3000).use { s ->
+                // No newline: the echo target never answers, and the app keeps the connection open.
+                s.getOutputStream().write("hi".toByteArray())
+                Thread.sleep(800)
+                assertEquals(1L, health.failed.get())
+                assertEquals(0L, health.ok.get())
+            }
+            Thread.sleep(200)
+            assertEquals("counted once", 1L, health.failed.get())
+            assertEquals(1L, health.accepted.get())
+        } finally {
+            bridge.stop()
+        }
+    }
+
+    @Test fun staleFakeIpIsRefusedWithoutAskingTheProxy() {
+        val health = dev.resproxy.net.RelayHealth()
+        val bridge = LocalSocksServer(upstream(), health).start()
+        try {
+            val e = runCatching {
+                Socks5Client.connect(Endpoint("127.0.0.1", bridge.port, Protocol.SOCKS5, "", ""), "100.64.0.7", 443, 3000)
+            }.exceptionOrNull()
+            assertEquals(4, (e as dev.resproxy.net.SocksRefusedException).code)
+            assertEquals(1L, health.staleFakeIps.get())
+            assertTrue(seenConnects.isEmpty())
+            assertEquals(0L, health.failed.get())
+        } finally {
+            bridge.stop()
+        }
+    }
+
+    @Test fun fakeDnsRange() {
+        assertTrue(LocalSocksServer.isFakeDnsIp("100.64.0.0"))
+        assertTrue(LocalSocksServer.isFakeDnsIp("100.127.255.255"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("100.128.0.1"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("100.63.1.1"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("100.64.0"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("100.64.example.com"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("2001:db8::1"))
+    }
+
+    @Test fun upstreamCanBeSwappedWithoutRestartingTheRelay() {
+        val bridge = LocalSocksServer(null).also { it.start() }
+        try {
+            val ep = Endpoint("127.0.0.1", bridge.port, Protocol.SOCKS5, "", "")
+            assertTrue(runCatching { Socks5Client.connect(ep, "example.com", 443, 3000) }.isFailure)
+            bridge.upstream = upstream()
+            Socks5Client.connect(ep, "example.com", 443, 3000).use { s ->
+                s.getOutputStream().write("again\n".toByteArray())
+                assertEquals("echo:again", BufferedReader(InputStreamReader(s.getInputStream())).readLine())
+            }
+        } finally {
+            bridge.stop()
         }
     }
 

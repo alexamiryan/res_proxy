@@ -476,25 +476,31 @@ class ProxyVpnService : VpnService() {
     }
 
     /** Re-reads the profile (credentials, gateway, protocol) and restarts the upstream. */
-    private suspend fun rebuild(): Boolean {
+    private suspend fun rebuild(restartEngine: Boolean = false): Boolean {
         val p = container.connectionProfile() ?: return false
         val label = container.settings.current().location.label
         profile = p
         TunnelState.update { it.copy(profileName = displayName(p, label)) }
-        return restartUpstream(p)
+        return restartUpstream(p, restartEngine)
     }
 
-    /** Returns false if the upstream could not be restarted (state already updated). */
-    private fun restartUpstream(p: Profile): Boolean {
-        stopHev()
+    /**
+     * Returns false if the upstream could not be restarted (state already updated). The relay keeps its port and the
+     * tunnel engine keeps running unless [restartEngine]: restarting hev empties its fake-IP DNS table, and every
+     * address apps still have cached (browsers keep them for a minute) then points nowhere or at a different site.
+     */
+    private fun restartUpstream(p: Profile, restartEngine: Boolean = false): Boolean {
+        if (restartEngine) stopHev()
         httpProxy?.stop(); httpProxy = null
         systemProxy?.stop(); systemProxy = null
-        socksBridge?.stop(); socksBridge = null
+        // Refuse new app connections until the new upstream is up (never via an old, possibly unchained one).
+        socksBridge?.let { it.upstream = null; it.closeConnections() }
+        if (p.tunnelMode != TunnelMode.FULL) { socksBridge?.stop(); socksBridge = null }
         upstream = null
         return try {
             startChain()
             startUpstream(p)
-            if (p.tunnelMode == TunnelMode.FULL) startHev()
+            if (p.tunnelMode == TunnelMode.FULL && !hevRunning) startHev()
             if (p.tunnelMode == TunnelMode.PROXY_ONLY) {
                 // The system proxy port is fixed at establish() time; rebuild the TUN to point at the new one.
                 val old = tun
@@ -612,7 +618,9 @@ class ProxyVpnService : VpnService() {
         httpProxy = LocalHttpProxy(up).also { it.start() }
         // hev always goes through our relay: fresh DNS per connection and visibility into whether app traffic works.
         if (p.tunnelMode == TunnelMode.FULL) {
-            socksBridge = LocalSocksServer(up, relayHealth, gate, lanDirect = { bypassLan }).also { it.start() }
+            val bridge = socksBridge
+            if (bridge != null) bridge.upstream = up
+            else socksBridge = LocalSocksServer(up, relayHealth, gate, lanDirect = { bypassLan }).also { it.start() }
         } else {
             systemProxy = LocalHttpProxy(up, gate).also { it.start() }
         }
@@ -765,7 +773,7 @@ class ProxyVpnService : VpnService() {
             if (!reloadChain()) return
             builtWith = keys()
             val wasDown = TunnelState.status.value.phase == Phase.PROXY_DOWN
-            if (rebuild()) {
+            if (rebuild(restartEngine = reason.startsWith(ENGINE_REASON))) {
                 TunnelState.update {
                     val repairs = if (retry) it.repairs else it.repairs + 1
                     // Rebuilt, but not known to work yet: the next probe (health loop / check) says CONNECTED.
@@ -821,7 +829,8 @@ class ProxyVpnService : VpnService() {
         }
         if (!hevRunning) return hevLast
         val s = runCatching { TunnelNative.TProxyGetStats() }.getOrNull() ?: return hevLast
-        val raw = s[1] to s[3]
+        // hev counts from its own side: rx = written to the TUN (apps' download), tx = read from it (apps' upload).
+        val raw = s[3] to s[1]
         if (raw.first + hevBase.first < hevLast.first || raw.second + hevBase.second < hevLast.second) hevBase = hevLast
         hevLast = (raw.first + hevBase.first) to (raw.second + hevBase.second)
         return hevLast
@@ -843,6 +852,11 @@ class ProxyVpnService : VpnService() {
         var failsInStreak = 0L
         var quietSince = 0L
         var appUpAtQuiet = 0L
+        var acceptedAtQuiet = -1L
+        var engineDeadLogged = false
+        var staleSeen = relayHealth.staleFakeIps.get()
+        var staleLoggedAt = 0L
+        var summaryAt = System.currentTimeMillis()
         while (scope.isActive) {
             delay(TICK_MS)
             if (kicked) { kicked = false; lastProbe = 0; fails = minOf(fails, 1) }
@@ -869,12 +883,35 @@ class ProxyVpnService : VpnService() {
                 log("relay: $failsInStreak failures, no successes; last: ${relayHealth.lastError}")
             }
 
-            // 2. Tunnel engine stuck: apps keep sending, but no connection reaches the relay.
-            if (profile?.tunnelMode == TunnelMode.FULL && hevRunning) {
+            // 2. Tunnel engine: its thread must be alive, and apps' packets must turn into relay connections. With no
+            //    relay connection open or opened for 30 s, everything apps send is new connections that never arrive.
+            val bridge = socksBridge
+            if (profile?.tunnelMode == TunnelMode.FULL && hevRunning && bridge != null) {
+                if (TunnelNative.TProxyIsRunning()) engineDeadLogged = false
+                val accepted = relayHealth.accepted.get()
                 val appUp = hevLast.second
-                if (newOk + newFail > 0 || !gate.isOpen) quietSince = 0
-                else if (quietSince == 0L) { quietSince = now; appUpAtQuiet = appUp }
-                else if (now - quietSince > 30_000 && appUp - appUpAtQuiet > 20_000) { suspect = "tunnel engine stalled"; quietSince = 0 }
+                if (!TunnelNative.TProxyIsRunning()) {
+                    if (!engineDeadLogged) log("tunnel engine stopped by itself")
+                    engineDeadLogged = true
+                    suspect = "$ENGINE_REASON stopped"
+                } else if (accepted != acceptedAtQuiet || bridge.openCount > 0 || !gate.isOpen || quietSince == 0L) {
+                    quietSince = now; acceptedAtQuiet = accepted; appUpAtQuiet = appUp
+                } else if (now - quietSince > 30_000) {
+                    if (appUp - appUpAtQuiet > 8_000) {
+                        log("tunnel engine: apps sent ${appUp - appUpAtQuiet} B in ${(now - quietSince) / 1000} s, no relay connection")
+                        suspect = "$ENGINE_REASON stalled"
+                    }
+                    quietSince = 0
+                }
+            }
+            val stale = relayHealth.staleFakeIps.get()
+            if (stale > staleSeen && now - staleLoggedAt > 60_000) {
+                log("relay: ${stale - staleSeen} connection(s) to fake IPs the tunnel engine no longer knows")
+                staleSeen = stale; staleLoggedAt = now
+            }
+            if (now - summaryAt > 15 * 60_000L) {
+                summaryAt = now
+                log("health: relay ${relayHealth.summary()}, open ${bridge?.openCount ?: 0}; engine ↓ ${hevLast.first} ↑ ${hevLast.second}")
             }
 
             // 3. VPN: WireGuard re-handshakes every 2 minutes; an old handshake means the VPN path is dead.
@@ -914,7 +951,7 @@ class ProxyVpnService : VpnService() {
             if (result.isSuccess) {
                 fails = 0; deadExitProbes = 0
                 lock.withLock {
-                    if (profile?.tunnelMode == TunnelMode.FULL && !hevRunning) runCatching { startHev() }
+                    if (profile?.tunnelMode == TunnelMode.FULL && !hevRunning) runCatching { startHev() }.onFailure { log("tunnel engine start", it) }
                 }
                 if (TunnelState.status.value.phase == Phase.PROXY_DOWN) {
                     TunnelState.update { it.copy(phase = Phase.CONNECTED, message = "Proxy reachable again") }
@@ -1096,5 +1133,7 @@ class ProxyVpnService : VpnService() {
         private const val ROTATION_PAUSE_MS = 20_000L
         /** Probes in a row where the proxy answered but couldn't reach the target: the sticky exit node is gone. */
         private const val DEAD_EXIT_PROBES = 2
+        /** Repair reasons starting with this restart hev itself; all other repairs leave it (and its DNS table) alone. */
+        private const val ENGINE_REASON = "tunnel engine"
     }
 }

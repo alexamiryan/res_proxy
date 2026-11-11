@@ -14,6 +14,9 @@ object TunnelNative {
     external fun TProxyStartService(configPath: String, tunFd: Int): Boolean
     external fun TProxyStopService(): Boolean
     external fun TProxyIsRunning(): Boolean
-    /** [txPackets, txBytes, rxPackets, rxBytes]; tx = written to TUN (download), rx = read from TUN (upload). */
+    /**
+     * [txPackets, txBytes, rxPackets, rxBytes] from hev's side: tx = read from the TUN (apps' upload),
+     * rx = written to the TUN (apps' download). See hev-socks5-tunnel.c (`stat_tx_*` in the TUN read loop).
+     */
     external fun TProxyGetStats(): LongArray
 }
