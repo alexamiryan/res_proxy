@@ -94,6 +94,7 @@ type Node struct {
 	mu      sync.Mutex
 	status  Status
 	names   map[string]netip.Addr // lowercase MagicDNS name / short name → IP
+	dns     map[string][]netip.Addr // the same names (and our own) → all their IPs, for DNS answers
 	addrs   map[netip.Addr]bool   // tailnet IPs of peers and self
 	self    []netip.Addr
 	updated time.Time
@@ -266,6 +267,7 @@ func (n *Node) setError(err error) {
 func (n *Node) apply(st *ipnstate.Status) {
 	out := Status{State: st.BackendState, AuthURL: st.AuthURL}
 	names := map[string]netip.Addr{}
+	dns := map[string][]netip.Addr{}
 	addrs := map[netip.Addr]bool{}
 	var self []netip.Addr
 	for _, a := range st.TailscaleIPs {
@@ -281,6 +283,7 @@ func (n *Node) apply(st *ipnstate.Status) {
 		if st.Self.KeyExpiry != nil {
 			out.KeyExpiry = st.Self.KeyExpiry.UnixMilli()
 		}
+		addNames(dns, out.DNSName, self)
 	}
 	for _, p := range st.Peer {
 		peer := Peer{HostName: p.HostName, DNSName: strings.TrimSuffix(p.DNSName, "."), Online: p.Online, OS: p.OS}
@@ -292,6 +295,7 @@ func (n *Node) apply(st *ipnstate.Status) {
 		if len(p.TailscaleIPs) == 0 || peer.DNSName == "" {
 			continue
 		}
+		addNames(dns, peer.DNSName, p.TailscaleIPs)
 		ip := pickIP(p.TailscaleIPs)
 		full := strings.ToLower(peer.DNSName)
 		names[full] = ip
@@ -307,8 +311,22 @@ func (n *Node) apply(st *ipnstate.Status) {
 	if n.socks != nil {
 		out.SocksPort = n.socks.Addr().(*net.TCPAddr).Port
 	}
-	n.status, n.names, n.addrs, n.self, n.updated = out, names, addrs, self, time.Now()
+	n.status, n.names, n.dns, n.addrs, n.self, n.updated = out, names, dns, addrs, self, time.Now()
 	n.mu.Unlock()
+}
+
+// addNames maps a device's full MagicDNS name and its short name (unless another device has it) to its IPs.
+func addNames(dns map[string][]netip.Addr, dnsName string, ips []netip.Addr) {
+	full := strings.ToLower(dnsName)
+	if full == "" || len(ips) == 0 {
+		return
+	}
+	dns[full] = ips
+	if short, _, ok := strings.Cut(full, "."); ok {
+		if _, taken := dns[short]; !taken {
+			dns[short] = ips
+		}
+	}
 }
 
 // pickIP prefers IPv4: the relay and most apps on the phone speak IPv4 to the tunnel.
@@ -362,6 +380,19 @@ func (n *Node) IsTailnetHost(host string) bool {
 	}
 	suf := strings.ToLower(n.status.MagicDNSSuffix)
 	return suf != "" && strings.HasSuffix(h, "."+suf)
+}
+
+// Lookup answers DNS for the tailnet-only VPN: ok=false for names that aren't the tailnet's (the app asks the network's
+// resolver). A name under the MagicDNS suffix that no device has is ok with no addresses (NXDOMAIN).
+func (n *Node) Lookup(name string) (ips []netip.Addr, ok bool) {
+	h := normHost(name)
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if ips, ok := n.dns[h]; ok {
+		return ips, true
+	}
+	suf := strings.ToLower(n.status.MagicDNSSuffix)
+	return nil, suf != "" && (h == suf || strings.HasSuffix(h, "."+suf))
 }
 
 // resolve maps a tailnet target to a peer's (or our own) IP; ok=false for anything that isn't a known tailnet host.

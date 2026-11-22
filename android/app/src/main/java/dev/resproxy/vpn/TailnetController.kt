@@ -41,9 +41,10 @@ data class TailnetUi(
 )
 
 /**
- * Runs this install's tailnet node while the tunnel service runs and the tailnet is turned on. Its lifecycle is
- * separate from the proxy tunnel's: repairs, reconnects, rotations and the kill switch never touch it, and a tailnet
- * problem never fails the tunnel. The service [bind]s it on create and [unbind]s it on Disconnect / destroy.
+ * Runs this install's tailnet node while the tailnet is turned on, whether the proxy is on or off (the service runs
+ * whenever either is on). Its lifecycle is separate from the proxy tunnel's: repairs, reconnects, rotations, switching
+ * the proxy on or off and the kill switch never touch it, and a tailnet problem never fails the tunnel. The service
+ * [bind]s it on create and [unbindNow]s it on destroy.
  */
 class TailnetController(
     private val context: Context,
@@ -75,8 +76,8 @@ class TailnetController(
         else -> Tailnet.Down
     }
 
-    /** What the node is (re)started from: a change restarts it. [active]: the user wants the tunnel on. */
-    private data class Spec(val s: TailnetSettings, val authKey: String, val active: Boolean)
+    /** What the node is (re)started from: a change restarts it. */
+    private data class Spec(val s: TailnetSettings, val authKey: String)
 
     @OptIn(FlowPreview::class)
     fun bind(scope: CoroutineScope) {
@@ -84,7 +85,7 @@ class TailnetController(
         job = scope.launch {
             launch { pollStatus() }
             // Debounced: text fields save as you type, and every change of the spec restarts the node.
-            combine(settings.settings, secrets.current) { s, k -> Spec(s.tailnet, k.authKey, s.wasConnected) }
+            combine(settings.settings, secrets.current) { s, k -> Spec(s.tailnet, k.authKey) }
                 .distinctUntilChanged()
                 .debounce(1500)
                 .collect { spec ->
@@ -101,15 +102,6 @@ class TailnetController(
         }
     }
 
-    /** Disconnect: the node stops (the device stays in the tailnet, offline). */
-    suspend fun unbind() {
-        job?.cancel()
-        job = null
-        lock.withLock { stopLocked() }
-        enabled = false
-        _ui.update { it.copy(running = false, status = null) }
-    }
-
     /** The service is being destroyed (no suspending there). */
     fun unbindNow() {
         job?.cancel()
@@ -120,7 +112,7 @@ class TailnetController(
     }
 
     private suspend fun apply(spec: Spec) = lock.withLock {
-        val run = spec.s.enabled && spec.active
+        val run = spec.s.enabled
         enabled = run
         stopLocked()
         _ui.update { TailnetUi(enabled = spec.s.enabled) }

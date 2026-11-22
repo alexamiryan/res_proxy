@@ -9,7 +9,8 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.flow.update
 
-enum class Phase { DISCONNECTED, CONNECTING, CONNECTED, ROTATING, PROXY_DOWN, ERROR }
+/** [TAILNET_ONLY]: the proxy is off, the service runs only the tailnet (a VPN carrying tailnet addresses only). */
+enum class Phase { DISCONNECTED, CONNECTING, CONNECTED, ROTATING, PROXY_DOWN, ERROR, TAILNET_ONLY }
 
 data class TunnelStatus(
     val phase: Phase = Phase.DISCONNECTED,
@@ -38,7 +39,8 @@ data class TunnelStatus(
     /** Apps' traffic is held back: the exit IP hasn't passed the reputation check (yet). */
     val trafficBlocked: Boolean = true,
 ) {
-    val isActive get() = phase != Phase.DISCONNECTED && phase != Phase.ERROR
+    /** The proxy tunnel runs (connecting, up or retrying). Not while only the tailnet runs. */
+    val isActive get() = phase != Phase.DISCONNECTED && phase != Phase.ERROR && phase != Phase.TAILNET_ONLY
 }
 
 /** Process-wide tunnel status, written by [ProxyVpnService] and observed by UI / tile. */
@@ -52,6 +54,9 @@ object TunnelState {
 /** Commands to the service. Callers must have VPN consent (`VpnService.prepare() == null`) before [connect]. */
 object TunnelController {
     fun connect(ctx: Context) = send(ctx, ProxyVpnService.ACTION_CONNECT)
+
+    /** Starts whatever the user has on (the proxy, or only the tailnet) if it isn't running. */
+    fun resume(ctx: Context) = send(ctx, ProxyVpnService.ACTION_RESUME)
 
     fun disconnect(ctx: Context) {
         if (TunnelState.status.value.isActive) send(ctx, ProxyVpnService.ACTION_DISCONNECT)

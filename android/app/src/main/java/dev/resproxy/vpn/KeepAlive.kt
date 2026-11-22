@@ -21,7 +21,8 @@ import dev.resproxy.data.DiagLog
 import kotlinx.coroutines.launch
 
 /**
- * Keeps the tunnel on once the user turned it on (`wasConnected`), until they turn it off.
+ * Keeps the tunnel on once the user turned it on (`wasConnected`), until they turn it off; the same for the tailnet
+ * (`tailnet.enabled`), which with the proxy off runs as the tailnet-only VPN.
  * Pure policy here; [ProxyVpnService] runs the in-process supervisor, [KeepAliveJob] restarts a service that's gone.
  */
 object KeepAlive {
@@ -46,7 +47,7 @@ object KeepAlive {
         container.ready.await()
         val s = container.settings.current()
         // A running service keeps itself up (its supervisor reconnects); starting it again would only reconnect twice.
-        if (!s.wasConnected || !s.autoConnect || TunnelState.status.value.isActive || ProxyVpnService.alive) return false
+        if (!(s.wasConnected || s.tailnet.enabled) || !s.autoConnect || TunnelState.status.value.isActive || ProxyVpnService.alive) return false
         // Boot / update receiver, the watchdog and the app often fire together: start once.
         val now = System.currentTimeMillis()
         synchronized(this) {
@@ -57,9 +58,9 @@ object KeepAlive {
             DiagLog.log("keep-alive ($why): VPN permission is gone, can't reconnect")
             return false
         }
-        DiagLog.log("keep-alive ($why): tunnel not running, starting it")
+        DiagLog.log("keep-alive ($why): " + (if (s.wasConnected) "tunnel" else "tailnet") + " not running, starting it")
         return try {
-            TunnelController.connect(ctx)
+            TunnelController.resume(ctx)
             true
         } catch (e: Exception) {
             // Android may refuse to start a foreground service from the background (battery optimized app).
@@ -75,7 +76,7 @@ object KeepAlive {
     /** Last resort when Android won't let us restart in the background: a tap (user action) is always allowed. */
     private fun notifyStopped(ctx: Context) {
         val connect = PendingIntent.getForegroundService(
-            ctx, 3, Intent(ctx, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_CONNECT), PendingIntent.FLAG_IMMUTABLE,
+            ctx, 3, Intent(ctx, ProxyVpnService::class.java).setAction(ProxyVpnService.ACTION_RESUME), PendingIntent.FLAG_IMMUTABLE,
         )
         val n = NotificationCompat.Builder(ctx, App.CHANNEL_ALERTS)
             .setSmallIcon(R.drawable.ic_shield)

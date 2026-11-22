@@ -1,7 +1,11 @@
 package dev.resproxy.ui
 
+import android.app.Activity
 import android.content.Intent
 import android.net.Uri
+import android.net.VpnService
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -33,7 +37,9 @@ import dev.resproxy.data.SplitMode
 import dev.resproxy.data.TailnetSettings
 import dev.resproxy.data.TunnelMode
 import dev.resproxy.net.TailnetStatus
+import dev.resproxy.vpn.Phase
 import dev.resproxy.vpn.TailnetController
+import dev.resproxy.vpn.TunnelController
 import dev.resproxy.vpn.TunnelState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
@@ -43,7 +49,7 @@ import java.util.Date
 /** One-line state for the settings hub. */
 fun tailnetSummary(s: TailnetSettings, st: TailnetStatus?): String = when {
     !s.enabled -> "Off"
-    st == null -> "On · starts with the tunnel"
+    st == null -> "On · not running"
     st.running -> listOfNotNull(st.dnsName.substringBefore('.').ifEmpty { null }, st.ips.firstOrNull()).joinToString(" · ").ifEmpty { "Connected" }
     st.needsLogin -> "Needs login"
     else -> "Connecting…"
@@ -61,15 +67,23 @@ fun TailnetSettingsPage(s: AppSettings, update: ((AppSettings) -> AppSettings) -
     fun edit(f: (TailnetSettings) -> TailnetSettings) = update { it.copy(tailnet = f(it.tailnet)) }
     var confirmLogout by remember { mutableStateOf(false) }
     var logoutError by remember { mutableStateOf<String?>(null) }
+    // With the proxy off the tailnet runs as its own VPN, which needs Android's VPN permission like the proxy does.
+    val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) {
+        if (it.resultCode == Activity.RESULT_OK) TunnelController.resume(ctx)
+    }
+    fun start() = VpnService.prepare(ctx)?.let { consent.launch(it) } ?: TunnelController.resume(ctx)
 
     SettingsGroup {
-        SwitchRow("Join my tailnet", "This phone becomes a device in your Tailscale network. No Tailscale app needed", t.enabled) { v ->
-            edit { it.copy(enabled = v) }
+        SwitchRow("Join my tailnet", "This phone becomes a device in your Tailscale network, with the proxy on or off. No Tailscale app needed", t.enabled) { v ->
+            scope.launch {
+                c.settings.update { it.copy(tailnet = it.tailnet.copy(enabled = v)) }
+                if (v) start()
+            }
         }
     }
     Hint(
-        "Tailnet devices are reached directly, everything else still goes through the proxy. " +
-            "Android runs one VPN at a time, so turn off the Tailscale app's VPN on this phone.",
+        "Tailnet devices are reached directly. Everything else goes through the proxy while it's on, and directly while " +
+            "it's off. Android runs one VPN at a time, so turn off the Tailscale app's VPN on this phone.",
         Modifier.padding(horizontal = 16.dp),
     )
 
@@ -78,7 +92,10 @@ fun TailnetSettingsPage(s: AppSettings, update: ((AppSettings) -> AppSettings) -
         SettingsGroup("Status") {
             when {
                 ui.error != null -> SettingRow("Couldn't start", ui.error)
-                !tunnel.isActive && st == null -> SettingRow("Waiting for the tunnel", "The tailnet runs while ResProxy is connected")
+                (tunnel.phase == Phase.DISCONNECTED || tunnel.phase == Phase.ERROR) && st == null -> {
+                    SettingRow("Not running", "Start it to connect this phone to the tailnet")
+                    Row(Modifier.padding(horizontal = 16.dp, vertical = 4.dp)) { Button(onClick = ::start) { Text("Start") } }
+                }
                 st == null -> SettingRow("Starting…")
                 st.needsLogin -> {
                     SettingRow("Log in to add this phone", "Approve it in your browser, or paste an auth key below")
@@ -100,6 +117,7 @@ fun TailnetSettingsPage(s: AppSettings, update: ((AppSettings) -> AppSettings) -
                 else -> SettingRow("Connecting…", st.state)
             }
             if (st != null && st.error.isNotEmpty() && !st.running) Hint(st.error)
+            if (tunnel.phase == Phase.TAILNET_ONLY && tunnel.message != null) Hint(tunnel.message!!)
         }
 
         if (st != null && st.running) {
@@ -143,8 +161,8 @@ fun TailnetSettingsPage(s: AppSettings, update: ((AppSettings) -> AppSettings) -
         }
 
         val notes = buildList {
-            if (s.connection.splitMode != SplitMode.ALL) add("Only apps that use the tunnel (Split tunnelling) can reach tailnet devices.")
-            if (s.connection.tunnelMode == TunnelMode.PROXY_ONLY) add("Proxy-only mode: only apps that use the system proxy reach tailnet devices.")
+            if (s.connection.splitMode != SplitMode.ALL) add("While the proxy is on, only apps that use the tunnel (Split tunnelling) can reach tailnet devices.")
+            if (s.connection.tunnelMode == TunnelMode.PROXY_ONLY) add("While the proxy is on in proxy-only mode, only apps that use the system proxy reach tailnet devices.")
             add("To stay reachable while the phone sleeps, allow Protection → Run in the background.")
         }
         notes.forEach { Hint(it, Modifier.padding(horizontal = 16.dp)) }

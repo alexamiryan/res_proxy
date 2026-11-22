@@ -9,7 +9,7 @@ same commit (a commit hook checks for this, see the end of this file).
 ResProxy sends traffic through residential proxies (IPRoyal, Geonode, custom), optionally reaching the proxy through
 a WireGuard VPN first (imported `.conf` profiles or a Mullvad account). It checks the exit IP's reputation
 (Clean / Suspicious / Bad) and can rotate the IP until the result is acceptable. On Android it can also join the user's
-tailnet itself (Tailscale's tsnet), so the Tailscale app isn't needed next to it. One repo, several platforms:
+tailnet itself (Tailscale's tsnet), with the proxy on or off, so the Tailscale app isn't needed next to it. One repo, several platforms:
 
 | Folder | Platform |
 |---|---|
@@ -31,6 +31,9 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
      → [WireGuard forwarder 127.0.0.1 → wireguard-go/netstack] → residential proxy (SOCKS5 / HTTP CONNECT)
                                                   └ tailnet targets → tailnet SOCKS5 front 127.0.0.1 → tsnet → peer
 tailnet peer → tsnet (fallback TCP handler) → TUN address 198.18.0.1:port (all-interfaces listeners) | 127.0.0.1:port (opt-in)
+
+proxy off, tailnet on (tailnet-only VPN): TUN routes 100.64/10 + fd7a:115c:a1e0::/48 only, DNS 100.100.100.100
+apps → TUN → hev → LocalSocksServer (no upstream) → tailnet SOCKS5 front → tsnet → peer;  UDP :53 → TailnetDns (relay)
 ```
 
 - hev **always** talks to our Kotlin relay (`net/LoopbackServers.kt`), never directly to the proxy. Because
@@ -47,9 +50,18 @@ tailnet peer → tsnet (fallback TCP handler) → TUN address 198.18.0.1:port (a
   are blocked.
 - `LocalHttpProxy` is also how the app does its own exit-IP checks and probes through the proxy.
 - **Tailnet** (`vpn/TailnetController.kt`, `net/Tailnet.kt`, Go `internal/tailnet`): ResProxy's own Tailscale node,
-  tsnet in `libwgbridge.so` (userspace netstack, no TUN). It runs while the service runs, the user wants the tunnel
-  (`wasConnected`) and `tailnet.enabled`; it has its own lifecycle and lock: repairs, reconnects, rotations, chain
-  rebuilds and `fail()` never touch it, Disconnect stops it. Both relays (`LocalSocksServer`, the proxy-only
+  tsnet in `libwgbridge.so` (userspace netstack, no TUN). Proxy (`wasConnected`) and tailnet (`tailnet.enabled`) are
+  independent: the service runs while either is on, and the node runs while the service runs and `tailnet.enabled`. It
+  has its own lifecycle and lock: repairs, reconnects, rotations, chain rebuilds, `fail()` and switching the proxy on/off
+  never touch it. Disconnect turns only the proxy off; with the tailnet on, the service rebuilds as the **tailnet-only
+  VPN** (`connectTailnetOnly`, phase `TAILNET_ONLY`, which doesn't count as `isActive`): TUN routes `Routes.TAILNET`
+  only, DNS server `Tailnet.DNS` (100.100.100.100, inside 100.64/10), hev + relay with no upstream, gate or health loop,
+  everything else direct. The relay answers its UDP associations itself (`localDns`): DNS only, via `net/TailnetDns.kt`
+  (tailnet names from Go's `Node.Lookup`, the rest from the network's resolver, `DnsResolver.rawQuery` on API 29+). No
+  split tunnelling there (all apps but ours). `ACTION_CONNECT` turns the proxy on; Always-on and sticky restarts bring back
+  whatever is on (Always-on turns the proxy on when nothing is); `ACTION_RESUME` (keep-alive, the Tailnet page) starts
+  whatever is on only if nothing runs (toggling the tailnet must not reconnect the proxy); the tailnet toggle with the
+  proxy off starts / stops the service. Connecting without a proxy account turns the proxy back off (no retry loop). Both relays (`LocalSocksServer`, the proxy-only
   `LocalHttpProxy`) ask `TailnetController.route()` first, before the gate, the fake-IP / LAN checks and relay health:
   matching targets (100.64/10, fd7a:115c:a1e0::/48, names under the MagicDNS suffix, bare peer names) go to the Go
   SOCKS5 front, which dials **only known peers** (never tsnet's `Server.Loopback`/`UserDial`: those send non-tailnet
@@ -127,8 +139,9 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 4. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
    retrying. Off: traffic goes direct while it keeps retrying.
 5. **On stays on.** Once the user turns the tunnel on (`wasConnected`), only Disconnect (app, notification, tile) or
-   losing the VPN permission (another VPN app, system settings) turns it off. Every other failure retries forever:
-   `fail()` keeps the service in the foreground (`PROXY_DOWN` "… — retrying") instead of stopping it, the service's
+   losing the VPN permission (another VPN app, system settings) turns it off. The same for the tailnet: while
+   `tailnet.enabled` the service (as the tailnet-only VPN if the proxy is off) is kept up by the same mechanisms, and
+   turning the tailnet off with the proxy off stops it. Every other failure retries forever: `fail()` keeps the service in the foreground (`PROXY_DOWN` "… — retrying") instead of stopping it, the service's
    `supervise()` loop reconnects with backoff (`KeepAlive.backoffMs`: 5 s … 2 min) whenever nothing is running, and
    `DeadManAlarm` (an exact alarm the service keeps re-arming 60 s ahead; `KeepAliveReceiver` restarts the tunnel when
    it fires, i.e. when the process died), `KeepAliveJob` (JobScheduler, every 15 min, persisted, plus a one-shot after
@@ -161,9 +174,10 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 | `app/src/main/java/dev/resproxy/App.kt` | `AppContainer` (manual DI): repos, `resolveVpn`, Mullvad login, backup export/import, migrations |
 | `data/` | `Models.kt` (Account, AppSettings, ConnectionSettings, VpnProfile, MullvadAccount, `VpnExit`), `Repositories.kt` (DataStore repos incl. `VpnRepository`), `SecretStore.kt`, `Backup.kt` |
 | `vpn/ProxyVpnService.kt` | TUN lifecycle, `watchSettings` (live apply), `healthLoop` (stall/handshake/engine detection), `repair`, network-change callback, reputation check + auto-rotate |
-| `vpn/TailnetController.kt` | Tailnet node lifecycle (bind/unbind by the service, debounced restarts on settings, crash guard, own network callback), `route()` for the relays, `logout()`, status for the UI |
+| `vpn/TailnetController.kt` | Tailnet node lifecycle (bound by the service while it runs, debounced restarts on settings, crash guard, own network callback), `route()` for the relays, `logout()`, status for the UI |
 | `vpn/` other | `HevConfig` (YAML), `Routes` (LAN-bypass route complement), `TunnelState` (status + controller), `SystemHooks` (boot receiver, QS tile), `KeepAlive` (reconnect policy, `KeepAliveJob` watchdog), `TunnelNative` (JNI) |
-| `net/Tailnet.kt` | JNI to the Go node, `TailnetRoute` (what the relays call), interface list for Go, `inRange` |
+| `net/Tailnet.kt` | JNI to the Go node, `TailnetRoute` (what the relays call), `lookup` (DNS), interface list for Go, `inRange` |
+| `net/TailnetDns.kt` | DNS of the tailnet-only VPN: tailnet names answered from the node, the rest forwarded to the network's resolver (`SystemDns`); minimal DNS wire format (`DnsMessage`) |
 | `net/` | `Upstream` (SOCKS5/HTTP clients, RTT samples), `LoopbackServers` (relay, HTTP proxy, `RelayHealth`), `Resolver` (system DNS + DoH), `WireGuard` (config parser + JNI), `Mullvad` (API, relay list, wg-quick builder), `X25519`, `ProxyProbe`, `LatencyProbe` (parallel ICMP ping to every Mullvad relay / profile endpoint; results sort the Settings → VPN list and the home VPN picker) |
 | `provider/` | Credential presets per provider (`Presets.kt`), location catalogs (`ProviderLocations.kt`) |
 | `reputation/` | Sources, parsers, `ReputationAggregator` verdict rules |
@@ -230,7 +244,9 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   (a Go install root), and `bash gradlew -Dorg.gradle.java.home=<JDK 21> …` (gradle.properties pins a Windows JDK path).
   Go: `CGO_ENABLED=0 go test ./cmd/... ./internal/...`. No Swift: iOS changes can't be checked here.
 - Tailnet by hand: `go run ./cmd/tailnettest -ip <LAN IP>`, then on the device Settings → Tailnet → Coordination server
-  `http://<LAN IP>:9911`. The emulator reaches the host's LAN IP; `nc` from `adb shell` goes through the tunnel (keep its
+  `http://<LAN IP>:9911`. A phone on mobile data: `-ip 127.0.0.1` and `adb reverse tcp:9911 tcp:9911` plus the printed DERP
+  port (peers then talk over DERP). Never change the coordination server of a device that is in the user's real tailnet
+  (Settings → Tailnet lists its devices); test against a machine of that tailnet instead. The emulator reaches the host's LAN IP; `nc` from `adb shell` goes through the tunnel (keep its
   stdin open: `(printf …; sleep 3) | nc host port`, the proxy drops a connection whose client half-closes at once).
 
 ## Build and test (Windows host)
@@ -355,7 +371,12 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   `ApplicationExitInfo`) with it present, leaves the tailnet off with a message instead of crash-looping. Only a node
   that ran clears the marker in `stopLocked()`; clearing it unconditionally made the guard never fire. Panics after
   the first minute still take the process down (`DeadManAlarm` restarts it). The status JSON must not contain `null` lists (Kotlin decodes
-  lists). The tailnet makes `libwgbridge.so` ~22 MB per ABI (was ~7 MB); the debug APK is ~110 MB.
+  lists).
+- **Tailnet-only VPN**: switching the proxy on/off rebuilds the TUN and hev (different routes and DNS), so open tailnet
+  connections drop at the switch (the node itself keeps running). hev's config is the same in both modes; its mapdns
+  (198.18.0.2) is simply unused there because the TUN's DNS server is 100.100.100.100. With Always-on + "Block connections
+  without VPN", Android drops everything not routed into the TUN, so with the proxy off only the tailnet works (the
+  Tailscale app has the same limit): logged, shown on the Tailnet page and in the notification. The tailnet makes `libwgbridge.so` ~22 MB per ABI (was ~7 MB); the debug APK is ~110 MB.
 - hev's stats are from its own side: tx = read from the TUN (apps' upload), rx = written to it (download). The Android
   meter had them swapped, which also made the old "engine stalled" check watch downloads and fire during streaming.
   The check now needs: no relay connection open or opened for 30 s while apps sent > 8 KB, or hev's thread gone

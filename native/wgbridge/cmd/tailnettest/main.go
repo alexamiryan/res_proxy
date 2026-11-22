@@ -58,6 +58,12 @@ func main() {
 	}
 
 	derpMap := integration.RunDERPAndSTUN(tb{}, logf, *ip)
+	// Printed for `adb reverse` (a phone on mobile data reaches this machine only over USB: -ip 127.0.0.1).
+	for _, r := range derpMap.Regions {
+		for _, n := range r.Nodes {
+			log.Printf("DERP: %s:%d (STUN udp %d)", n.HostName, n.DERPPort, n.STUNPort)
+		}
+	}
 	control := &testcontrol.Server{
 		DERPMap:        derpMap,
 		DNSConfig:      &tailcfg.DNSConfig{Proxied: true},

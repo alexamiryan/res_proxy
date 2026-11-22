@@ -5,6 +5,8 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -93,6 +95,9 @@ abstract class LoopbackServer(private val name: String) {
     }
 
     protected abstract fun handle(client: Socket)
+
+    /** Runs [task] on this server's connection pool. */
+    protected fun background(task: () -> Unit) = pool.execute(task)
 
     /**
      * Bidirectional copy; returns (bytes up, bytes down) once both directions have finished. Once the client is done
@@ -213,6 +218,11 @@ class LocalSocksServer(
     /** Tailnet bytes (apps' upload / download), kept out of the proxy usage. */
     val tailnetUp: AtomicLong = AtomicLong(),
     val tailnetDown: AtomicLong = AtomicLong(),
+    /**
+     * Tailnet-only VPN (proxy off): UDP associations are answered here, DNS queries ([TailnetDns]) only, nothing goes to
+     * a proxy. Only tailnet addresses are routed into that TUN, so the only UDP arriving is DNS to [Tailnet.DNS].
+     */
+    private val localDns: ((ByteArray) -> ByteArray?)? = null,
 ) : LoopbackServer("socks-relay") {
 
     override fun handle(client: Socket) {
@@ -300,6 +310,7 @@ class LocalSocksServer(
     }
 
     private fun udpAssociate(client: Socket, inp: DataInputStream, out: OutputStream) {
+        localDns?.let { return dnsAssociate(inp, out, it) }
         val ep = upstream?.endpoint ?: run { out.write(reply(1)); return }
         if (gate != null && !gate.isOpen) { out.write(reply(2)); return }
         if (ep.protocol != Protocol.SOCKS5 || ep.host == "127.0.0.1") { out.write(reply(7)); return }
@@ -313,9 +324,53 @@ class LocalSocksServer(
         relay(client, ctrl, inp) // keeps the association alive until either side closes
     }
 
+    /** A SOCKS5 UDP association answered locally: datagrams to port 53 get [dns]'s answer, others are dropped. */
+    private fun dnsAssociate(inp: DataInputStream, out: OutputStream, dns: (ByteArray) -> ByteArray?) {
+        val udp = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+        try {
+            out.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (udp.localPort shr 8).toByte(), udp.localPort.toByte()))
+            background {
+                val buf = ByteArray(65_535)
+                while (!udp.isClosed) {
+                    val p = DatagramPacket(buf, buf.size)
+                    try { udp.receive(p) } catch (_: IOException) { break }
+                    val (header, payload) = socksUdpSplit(buf, p.length) ?: continue
+                    if (header.port != 53) continue
+                    val from = p.socketAddress
+                    background {
+                        val answer = runCatching { dns(payload) }.getOrNull() ?: return@background
+                        val reply = header.bytes + answer
+                        runCatching { udp.send(DatagramPacket(reply, reply.size, from)) }
+                    }
+                }
+            }
+            // The association lives as long as its TCP connection.
+            while (inp.read() >= 0) Unit
+        } finally {
+            udp.close()
+        }
+    }
+
     private fun reply(code: Int) = byteArrayOf(5, code.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)
 
+    /** A SOCKS5 UDP header: its raw bytes (reused for the reply) and the destination port. */
+    internal class UdpHeader(val bytes: ByteArray, val port: Int)
+
     companion object {
+        /** Splits a SOCKS5 UDP datagram into header and payload; null for fragments and malformed ones. */
+        internal fun socksUdpSplit(buf: ByteArray, len: Int): Pair<UdpHeader, ByteArray>? {
+            if (len < 4 || buf[2].toInt() != 0) return null
+            val addrEnd = when (buf[3].toInt()) {
+                1 -> 4 + 4
+                4 -> 4 + 16
+                3 -> if (len > 4) 5 + (buf[4].toInt() and 0xff) else return null
+                else -> return null
+            }
+            if (len < addrEnd + 2) return null
+            val port = (buf[addrEnd].toInt() and 0xff shl 8) or (buf[addrEnd + 1].toInt() and 0xff)
+            return UdpHeader(buf.copyOf(addrEnd + 2), port) to buf.copyOfRange(addrEnd + 2, len)
+        }
+
         /** How long a new connection waits for a check in progress before it is refused (hev gives up after 10 s). */
         const val GATE_WAIT_MS = 8_000L
         /** An app that sent data and got nothing back for this long has a dead connection. */

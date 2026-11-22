@@ -20,6 +20,9 @@ object Routes {
 
     fun v6(bypassLan: Boolean) = if (bypassLan) complement(LAN_V6, 128) + TAILNET_V6 else listOf(Route("::", 0))
 
+    /** The tailnet-only VPN (proxy off): Tailscale's ranges and nothing else. Its DNS server 100.100.100.100 is inside. */
+    val TAILNET = listOf(Route("100.64.0.0", 10), TAILNET_V6)
+
     /** Smallest set of prefixes covering the whole address space except [excluded]. */
     fun complement(excluded: List<String>, bits: Int): List<Route> {
         val ex = excluded.map { parse(it) }

@@ -105,6 +105,14 @@ object Tailnet : TailnetRoute {
 
     override fun matches(host: String): Boolean = running && nativeIsTailnetHost(host)
 
+    /** For DNS: a tailnet name's IPs (empty: no such device), or null when [name] isn't a tailnet name. */
+    fun lookup(name: String): List<InetAddress>? {
+        if (!available || !running) return null
+        val r = nativeLookup(name)
+        if (r.isEmpty()) return null
+        return r.removePrefix("=").split(' ').filter { it.isNotEmpty() }.mapNotNull { runCatching { InetAddress.getByName(it) }.getOrNull() }
+    }
+
     override fun open(host: String, port: Int): Socket {
         val (p, pw) = socks ?: throw SocksRefusedException("Tailnet is not running", 4)
         return Socks5Client.connect(Endpoint("127.0.0.1", p, Protocol.SOCKS5, SOCKS_USER, pw), host, port, 15_000)
@@ -170,6 +178,8 @@ object Tailnet : TailnetRoute {
     }
 
     const val SOCKS_USER = "tailnet"
+    /** DNS server of the tailnet-only VPN (Tailscale's own, inside 100.64/10): answered by [TailnetDns]. */
+    const val DNS = "100.100.100.100"
 
     @JvmStatic private external fun nativeStart(
         dir: String, hostname: String, authKey: String, controlUrl: String, stateKey: String, localAddr: String, loopbackPorts: String,
@@ -179,6 +189,7 @@ object Tailnet : TailnetRoute {
     @JvmStatic private external fun nativeStatus(): String
     @JvmStatic private external fun nativeIsTailnetHost(host: String): Boolean
     @JvmStatic private external fun nativeSocks(): String
+    @JvmStatic private external fun nativeLookup(name: String): String
     @JvmStatic private external fun nativeSetInterfaces(spec: String)
     @JvmStatic private external fun nativeNetworkChanged()
 }

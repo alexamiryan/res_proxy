@@ -127,6 +127,26 @@ func Java_dev_resproxy_net_Tailnet_nativeIsTailnetHost(env *C.JNIEnv, cls C.jcla
 	return C.JNI_FALSE
 }
 
+// nativeLookup answers a DNS name: "" when it isn't a tailnet name, else "=" and the device's IPs, space-separated
+// (just "=" for an unknown name under the MagicDNS suffix).
+//
+//export Java_dev_resproxy_net_Tailnet_nativeLookup
+func Java_dev_resproxy_net_Tailnet_nativeLookup(env *C.JNIEnv, cls C.jclass, name C.jstring) C.jstring {
+	n := node()
+	if n == nil {
+		return jStr(env, "")
+	}
+	ips, ok := n.Lookup(goStr(env, name))
+	if !ok {
+		return jStr(env, "")
+	}
+	out := make([]string, len(ips))
+	for i, a := range ips {
+		out[i] = a.String()
+	}
+	return jStr(env, "="+strings.Join(out, " "))
+}
+
 // nativeSocks returns "port:password" of the outbound SOCKS5 front, or "" when the node isn't running.
 //
 //export Java_dev_resproxy_net_Tailnet_nativeSocks

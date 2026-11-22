@@ -17,10 +17,12 @@ import (
 
 	"golang.org/x/net/proxy"
 	"tailscale.com/ipn"
+	"tailscale.com/ipn/ipnstate"
 	"tailscale.com/net/netns"
 	"tailscale.com/tailcfg"
 	"tailscale.com/tstest/integration"
 	"tailscale.com/tstest/integration/testcontrol"
+	"tailscale.com/types/key"
 	"tailscale.com/types/logger"
 )
 
@@ -182,6 +184,41 @@ func TestStatusJSONHasNoNullLists(t *testing.T) {
 	b, _ := json.Marshal(n.Status())
 	if strings.Contains(string(b), "null") {
 		t.Fatalf("null in %s", b)
+	}
+}
+
+func TestLookup(t *testing.T) {
+	a := netip.MustParseAddr
+	n := &Node{}
+	n.apply(&ipnstate.Status{
+		BackendState:   "Running",
+		TailscaleIPs:   []netip.Addr{a("100.64.0.2")},
+		CurrentTailnet: &ipnstate.TailnetStatus{MagicDNSSuffix: "tail1.ts.net"},
+		Self:           &ipnstate.PeerStatus{DNSName: "phone.tail1.ts.net.", TailscaleIPs: []netip.Addr{a("100.64.0.2")}},
+		Peer: map[key.NodePublic]*ipnstate.PeerStatus{
+			key.NewNode().Public(): {DNSName: "Laptop.tail1.ts.net.", TailscaleIPs: []netip.Addr{a("100.64.0.3"), a("fd7a:115c:a1e0::3")}},
+		},
+	})
+	for _, tc := range []struct {
+		name string
+		ips  string
+		ok   bool
+	}{
+		{"laptop", "100.64.0.3 fd7a:115c:a1e0::3", true},
+		{"LAPTOP.tail1.ts.net.", "100.64.0.3 fd7a:115c:a1e0::3", true},
+		{"phone", "100.64.0.2", true},
+		{"gone.tail1.ts.net", "", true},
+		{"example.com", "", false},
+		{"laptop.example.com", "", false},
+	} {
+		ips, ok := n.Lookup(tc.name)
+		var got []string
+		for _, ip := range ips {
+			got = append(got, ip.String())
+		}
+		if ok != tc.ok || strings.Join(got, " ") != tc.ips {
+			t.Errorf("Lookup(%q) = %v, %v; want %q, %v", tc.name, got, ok, tc.ips, tc.ok)
+		}
 	}
 }
 
