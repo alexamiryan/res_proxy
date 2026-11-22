@@ -4,6 +4,7 @@ import dev.resproxy.data.Protocol
 import dev.resproxy.provider.Endpoint
 import java.io.ByteArrayOutputStream
 import java.io.DataInputStream
+import java.io.EOFException
 import java.io.IOException
 import java.io.InputStream
 import java.net.InetAddress
@@ -75,6 +76,17 @@ object Socks5Client {
     internal fun handshake(
         s: Socket, user: String, pass: String, host: String, port: Int, cmd: Int = 1, onRtt: ((Long) -> Unit)? = null,
     ): InetSocketAddress {
+        var stage = "before answering"
+        try {
+            return handshakeSteps(s, user, pass, host, port, cmd, onRtt) { stage = it }
+        } catch (e: EOFException) {
+            throw IOException("Proxy closed the connection $stage")
+        }
+    }
+
+    private fun handshakeSteps(
+        s: Socket, user: String, pass: String, host: String, port: Int, cmd: Int, onRtt: ((Long) -> Unit)?, stage: (String) -> Unit,
+    ): InetSocketAddress {
         val out = s.getOutputStream()
         val inp = DataInputStream(s.getInputStream())
         val auth = user.isNotEmpty()
@@ -88,6 +100,7 @@ object Socks5Client {
                 if (u.size > 255 || p.size > 255) throw ProxyAuthException("Username/password too long for SOCKS5")
                 out.write(byteArrayOf(1, u.size.toByte()) + u + byteArrayOf(p.size.toByte()) + p)
                 out.flush()
+                stage("after the login (wrong username/password or no traffic left?)")
                 val t0 = System.nanoTime()
                 inp.readUnsignedByte()
                 onRtt?.invoke((System.nanoTime() - t0) / 1_000_000)
@@ -96,6 +109,7 @@ object Socks5Client {
             0xFF -> throw ProxyAuthException("Proxy requires authentication")
             else -> throw IOException("Unsupported SOCKS5 auth method")
         }
+        stage("when asked for $host:$port")
         out.write(byteArrayOf(5, cmd.toByte(), 0) + encodeAddress(host) + byteArrayOf((port shr 8).toByte(), port.toByte()))
         out.flush()
         if (inp.readUnsignedByte() != 5) throw IOException("Bad SOCKS5 reply")
