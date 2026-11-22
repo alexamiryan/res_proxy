@@ -5,6 +5,8 @@ import java.io.DataInputStream
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.net.DatagramPacket
+import java.net.DatagramSocket
 import java.net.InetAddress
 import java.net.InetSocketAddress
 import java.net.ServerSocket
@@ -29,6 +31,8 @@ abstract class LoopbackServer(private val name: String) {
     private val server = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
     private val pool: ExecutorService = Executors.newCachedThreadPool { r -> Thread(r, "$name-conn").apply { isDaemon = true } }
     private val open = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
+    /** Tailnet connections: not internet traffic, so a new or bad exit IP doesn't drop them ([closeConnections]). */
+    private val kept = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
     @Volatile private var running = false
 
     val port: Int get() = server.localPort
@@ -69,17 +73,31 @@ abstract class LoopbackServer(private val name: String) {
     fun stop() {
         running = false
         runCatching { server.close() }
-        closeConnections()
+        // Everything, tailnet connections included (closeConnections keeps those).
+        for (s in open) s.closeQuietly()
         pool.shutdownNow()
     }
 
-    /** Drops every open connection (e.g. the exit IP turned out bad) but keeps accepting new ones. */
+    /** Drops every open connection (e.g. the exit IP turned out bad) but keeps accepting new ones. Tailnet ones stay. */
     fun closeConnections() {
         // The set changes while connections finish; its own iterator is safe for that (toList() isn't).
-        for (s in open) s.closeQuietly()
+        for (s in open) if (s !in kept) s.closeQuietly()
+    }
+
+    /** Relays a tailnet connection: kept across exit IP changes, counted in [up] / [down] instead of the proxy totals. */
+    protected fun relayTailnet(client: Socket, remote: Socket, clientIn: InputStream, up: AtomicLong, down: AtomicLong) {
+        kept += client; kept += remote
+        try {
+            relay(client, remote, clientIn, upTotal = up, downTotal = down)
+        } finally {
+            kept -= client; kept -= remote
+        }
     }
 
     protected abstract fun handle(client: Socket)
+
+    /** Runs [task] on this server's connection pool. */
+    protected fun background(task: () -> Unit) = pool.execute(task)
 
     /**
      * Bidirectional copy; returns (bytes up, bytes down) once both directions have finished. Once the client is done
@@ -88,14 +106,14 @@ abstract class LoopbackServer(private val name: String) {
      */
     protected fun relay(
         client: Socket, remote: Socket, clientIn: InputStream = client.getInputStream(), upCount: AtomicLong = AtomicLong(),
-        onFirstDown: () -> Unit = {},
+        upTotal: AtomicLong = bytesUp, downTotal: AtomicLong = bytesDown, onFirstDown: () -> Unit = {},
     ): Pair<Long, Long> {
         open += remote
         val reaper = java.util.concurrent.atomic.AtomicReference<ScheduledFuture<*>?>()
         val down = AtomicLong()
         try {
             val up = pool.submit {
-                copy(clientIn, remote.getOutputStream(), bytesUp, upCount, null)
+                copy(clientIn, remote.getOutputStream(), upTotal, upCount, null)
                 runCatching { remote.shutdownOutput() }
                 var seen = down.get()
                 reaper.set(runCatching {
@@ -105,7 +123,7 @@ abstract class LoopbackServer(private val name: String) {
                     }, HALF_CLOSE_IDLE_MS, HALF_CLOSE_IDLE_MS, TimeUnit.MILLISECONDS)
                 }.getOrNull())
             }
-            copy(remote.getInputStream(), client.getOutputStream(), bytesDown, down, onFirstDown)
+            copy(remote.getInputStream(), client.getOutputStream(), downTotal, down, onFirstDown)
             runCatching { client.shutdownOutput() }
             runCatching { up.get() }
             return upCount.get() to down.get()
@@ -195,6 +213,16 @@ class LocalSocksServer(
     private val lanResolve: (String) -> InetAddress? = { LanTargets.resolve(it) },
     private val gateWaitMs: Long = GATE_WAIT_MS,
     private val noResponseMs: Long = NO_RESPONSE_MS,
+    /** The tailnet route while the tailnet is on, else null. */
+    private val tailnet: () -> TailnetRoute? = { null },
+    /** Tailnet bytes (apps' upload / download), kept out of the proxy usage. */
+    val tailnetUp: AtomicLong = AtomicLong(),
+    val tailnetDown: AtomicLong = AtomicLong(),
+    /**
+     * Tailnet-only VPN (proxy off): UDP associations are answered here, DNS queries ([TailnetDns]) only, nothing goes to
+     * a proxy. Only tailnet addresses are routed into that TUN, so the only UDP arriving is DNS to [Tailnet.DNS].
+     */
+    private val localDns: ((ByteArray) -> ByteArray?)? = null,
 ) : LoopbackServer("socks-relay") {
 
     override fun handle(client: Socket) {
@@ -222,6 +250,19 @@ class LocalSocksServer(
     }
 
     private fun connect(client: Socket, inp: DataInputStream, out: OutputStream, host: String, port: Int) {
+        // Tailnet first: not internet (no gate, no exit IP, not proxy health), and a bare MagicDNS name like `nas` would
+        // otherwise count as a LAN name.
+        val tn = tailnet()
+        if (tn != null && tn.matches(host)) {
+            val remote = try {
+                tn.open(host, port)
+            } catch (e: IOException) {
+                out.write(reply((e as? SocksRefusedException)?.code ?: 4)); return
+            }
+            out.write(reply(0))
+            relayTailnet(client, remote, inp, tailnetUp, tailnetDown)
+            return
+        }
         if (isFakeDnsIp(host)) {
             // Only the tunnel engine hands these out; one it can't map back to a name is useless to any proxy.
             health.staleFakeIps.incrementAndGet()
@@ -261,7 +302,7 @@ class LocalSocksServer(
         }
         val watchdog = runCatching { timers.schedule(noResponse, noResponseMs, TimeUnit.MILLISECONDS) }.getOrNull()
         try {
-            relay(client, remote, inp, upCount = upCount) { gotData.set(true); if (counted.compareAndSet(false, true)) health.success() }
+            relay(client, remote, inp, upCount = upCount, onFirstDown = { gotData.set(true); if (counted.compareAndSet(false, true)) health.success() })
         } finally {
             watchdog?.cancel(false)
         }
@@ -269,6 +310,7 @@ class LocalSocksServer(
     }
 
     private fun udpAssociate(client: Socket, inp: DataInputStream, out: OutputStream) {
+        localDns?.let { return dnsAssociate(inp, out, it) }
         val ep = upstream?.endpoint ?: run { out.write(reply(1)); return }
         if (gate != null && !gate.isOpen) { out.write(reply(2)); return }
         if (ep.protocol != Protocol.SOCKS5 || ep.host == "127.0.0.1") { out.write(reply(7)); return }
@@ -282,19 +324,63 @@ class LocalSocksServer(
         relay(client, ctrl, inp) // keeps the association alive until either side closes
     }
 
+    /** A SOCKS5 UDP association answered locally: datagrams to port 53 get [dns]'s answer, others are dropped. */
+    private fun dnsAssociate(inp: DataInputStream, out: OutputStream, dns: (ByteArray) -> ByteArray?) {
+        val udp = DatagramSocket(0, InetAddress.getByName("127.0.0.1"))
+        try {
+            out.write(byteArrayOf(5, 0, 0, 1, 127, 0, 0, 1, (udp.localPort shr 8).toByte(), udp.localPort.toByte()))
+            background {
+                val buf = ByteArray(65_535)
+                while (!udp.isClosed) {
+                    val p = DatagramPacket(buf, buf.size)
+                    try { udp.receive(p) } catch (_: IOException) { break }
+                    val (header, payload) = socksUdpSplit(buf, p.length) ?: continue
+                    if (header.port != 53) continue
+                    val from = p.socketAddress
+                    background {
+                        val answer = runCatching { dns(payload) }.getOrNull() ?: return@background
+                        val reply = header.bytes + answer
+                        runCatching { udp.send(DatagramPacket(reply, reply.size, from)) }
+                    }
+                }
+            }
+            // The association lives as long as its TCP connection.
+            while (inp.read() >= 0) Unit
+        } finally {
+            udp.close()
+        }
+    }
+
     private fun reply(code: Int) = byteArrayOf(5, code.toByte(), 0, 1, 0, 0, 0, 0, 0, 0)
 
+    /** A SOCKS5 UDP header: its raw bytes (reused for the reply) and the destination port. */
+    internal class UdpHeader(val bytes: ByteArray, val port: Int)
+
     companion object {
+        /** Splits a SOCKS5 UDP datagram into header and payload; null for fragments and malformed ones. */
+        internal fun socksUdpSplit(buf: ByteArray, len: Int): Pair<UdpHeader, ByteArray>? {
+            if (len < 4 || buf[2].toInt() != 0) return null
+            val addrEnd = when (buf[3].toInt()) {
+                1 -> 4 + 4
+                4 -> 4 + 16
+                3 -> if (len > 4) 5 + (buf[4].toInt() and 0xff) else return null
+                else -> return null
+            }
+            if (len < addrEnd + 2) return null
+            val port = (buf[addrEnd].toInt() and 0xff shl 8) or (buf[addrEnd + 1].toInt() and 0xff)
+            return UdpHeader(buf.copyOf(addrEnd + 2), port) to buf.copyOfRange(addrEnd + 2, len)
+        }
+
         /** How long a new connection waits for a check in progress before it is refused (hev gives up after 10 s). */
         const val GATE_WAIT_MS = 8_000L
         /** An app that sent data and got nothing back for this long has a dead connection. */
         const val NO_RESPONSE_MS = 20_000L
 
-        /** hev's fake-IP DNS range (HevConfig mapdns: 100.64.0.0/10). */
+        /** hev's fake-IP DNS range (HevConfig mapdns: 198.19.0.0/16). */
         fun isFakeDnsIp(host: String): Boolean {
             val p = host.split('.')
             if (p.size != 4 || p.any { it.toIntOrNull() !in 0..255 }) return false
-            return p[0] == "100" && p[1].toInt() in 64..127
+            return p[0] == "198" && p[1] == "19"
         }
     }
 }
@@ -304,7 +390,14 @@ class LocalSocksServer(
  * Used as the system HTTP proxy in proxy-only mode, and by the app itself for exit-IP and
  * health checks in every mode.
  */
-class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGate? = null) : LoopbackServer("http-proxy") {
+class LocalHttpProxy(
+    private val upstream: Upstream,
+    private val gate: TrafficGate? = null,
+    /** Proxy-only mode: tailnet targets skip the gate and the residential proxy. */
+    private val tailnet: () -> TailnetRoute? = { null },
+    private val tailnetUp: AtomicLong = AtomicLong(),
+    private val tailnetDown: AtomicLong = AtomicLong(),
+) : LoopbackServer("http-proxy") {
 
     override fun handle(client: Socket) {
         val inp = client.getInputStream()
@@ -317,10 +410,11 @@ class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGa
 
         if (method.equals("CONNECT", ignoreCase = true)) {
             val (host, port) = splitAuthority(target, 443) ?: return respond(out, 400, "Bad Request")
-            val remote = openOr502(out, host, port) ?: return
+            val tn = tailnet()?.takeIf { it.matches(host) }
+            val remote = (if (tn != null) openTailnet(out, tn, host, port) else openOr502(out, host, port)) ?: return
             out.write("$version 200 Connection established\r\n\r\n".toByteArray())
             out.flush()
-            relay(client, remote, inp)
+            if (tn != null) relayTailnet(client, remote, inp, tailnetUp, tailnetDown) else relay(client, remote, inp)
             return
         }
 
@@ -335,9 +429,16 @@ class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGa
                 .forEach { append(it).append("\r\n") }
             append("Connection: close\r\n\r\n")
         }
-        val remote = openOr502(out, uri.host, port) ?: return
+        val tn = tailnet()?.takeIf { it.matches(uri.host) }
+        val remote = (if (tn != null) openTailnet(out, tn, uri.host, port) else openOr502(out, uri.host, port)) ?: return
         remote.getOutputStream().apply { write(rewritten.toByteArray(Charsets.ISO_8859_1)); flush() }
-        relay(client, remote, inp)
+        if (tn != null) relayTailnet(client, remote, inp, tailnetUp, tailnetDown) else relay(client, remote, inp)
+    }
+
+    private fun openTailnet(out: OutputStream, tn: TailnetRoute, host: String, port: Int): Socket? = try {
+        tn.open(host, port)
+    } catch (e: IOException) {
+        respond(out, 502, "Bad Gateway", "Tailnet: ${e.message ?: "device not reachable"}"); null
     }
 
     private fun openOr502(out: OutputStream, host: String, port: Int): Socket? = try {

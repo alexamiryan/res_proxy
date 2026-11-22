@@ -187,6 +187,26 @@ public struct SavedSession: Codable, Equatable, Sendable {
     public func expired(_ now: Int64) -> Bool { now >= createdAt + Int64(lifetimeMinutes - 1) * 60_000 }
 }
 
+/// Android's tailnet membership. Not used on iOS; kept so backups round-trip.
+public struct TailnetSettings: Codable, Equatable, Sendable {
+    public var enabled = false
+    public var hostname = ""
+    public var controlUrl = ""
+    public var acceptInbound = true
+    public var loopbackPorts: [Int] = []
+
+    public init() {}
+
+    public init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: AnyKey.self)
+        enabled = c.v("enabled", false)
+        hostname = c.v("hostname", "")
+        controlUrl = c.v("controlUrl", "")
+        acceptInbound = c.v("acceptInbound", true)
+        loopbackPorts = Array(Set(c.v("loopbackPorts", [Int]()).filter { $0 > 0 && $0 < 65536 })).sorted()
+    }
+}
+
 public struct AppSettings: Codable, Equatable, Sendable {
     public var schema = SETTINGS_SCHEMA
     public var provider: Provider = .IPROYAL
@@ -207,6 +227,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
     public var vpnExit = ""
     public var bypassLan = true
     public var sessions: [String: SavedSession] = [:]
+    public var tailnet = TailnetSettings()
 
     public init() {}
 
@@ -230,6 +251,7 @@ public struct AppSettings: Codable, Equatable, Sendable {
         chainEnabled = c.v("chainEnabled", false)
         vpnExit = c.v("vpnExit", "")
         bypassLan = c.v("bypassLan", true)
+        tailnet = c.v("tailnet", TailnetSettings())
         if let nested = try? c.nestedContainer(keyedBy: AnyKey.self, forKey: AnyKey("sessions")) {
             for k in nested.allKeys {
                 if let s = try? nested.decode(SavedSession.self, forKey: k) { sessions[k.stringValue] = s }

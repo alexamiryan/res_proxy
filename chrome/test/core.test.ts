@@ -81,6 +81,12 @@ describe('settings', () => {
     expect(normSettings({ schema: 3, connection: { lifetimeMinutes: 1440 } }).connection.lifetimeMinutes).toBe(1440)
   })
 
+  it('keeps Android\'s tailnet settings with defaults', () => {
+    expect(normSettings({ schema: 3 }).tailnet).toEqual({ enabled: false, hostname: '', controlUrl: '', acceptInbound: true, loopbackPorts: [] })
+    const t = normSettings({ schema: 3, tailnet: { enabled: true, hostname: 'phone', controlUrl: 'https://hs.example', acceptInbound: false, loopbackPorts: [8022, 22, 8022, 0, 'x', 70000] } }).tailnet
+    expect(t).toEqual({ enabled: true, hostname: 'phone', controlUrl: 'https://hs.example', acceptInbound: false, loopbackPorts: [22, 8022] })
+  })
+
   it('remembers sticky sessions per provider + location', () => {
     const now = 1_000_000_000
     let s = withSession({ ...defaultSettings(), location: { ...defaultSettings().location, country: 'us' } }, 'aaa', now)

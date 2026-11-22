@@ -7,12 +7,21 @@ import java.net.InetAddress
 object Routes {
     data class Route(val address: String, val prefix: Int)
 
-    /** Kept off the VPN with LAN bypass on. 100.64.0.0/10 is deliberately routed: hev's fake-IP DNS uses it. */
+    /**
+     * Kept off the VPN with LAN bypass on. 198.18.0.0/15 (TUN, hev's fake-IP DNS) and 100.64.0.0/10 (tailnet peers) are
+     * deliberately routed.
+     */
     val LAN_V4 = listOf("10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16", "169.254.0.0/16", "224.0.0.0/4", "255.255.255.255/32")
     val LAN_V6 = listOf("fe80::/10", "fd00::/8", "ff00::/8")
 
     fun v4(bypassLan: Boolean) = if (bypassLan) complement(LAN_V4, 32) else listOf(Route("0.0.0.0", 0))
-    fun v6(bypassLan: Boolean) = if (bypassLan) complement(LAN_V6, 128) else listOf(Route("::", 0))
+    /** Tailscale's IPv6 range sits inside fd00::/8 (LAN): routed explicitly so tailnet peers stay reachable. */
+    val TAILNET_V6 = Route("fd7a:115c:a1e0::", 48)
+
+    fun v6(bypassLan: Boolean) = if (bypassLan) complement(LAN_V6, 128) + TAILNET_V6 else listOf(Route("::", 0))
+
+    /** The tailnet-only VPN (proxy off): Tailscale's ranges and nothing else. Its DNS server 100.100.100.100 is inside. */
+    val TAILNET = listOf(Route("100.64.0.0", 10), TAILNET_V6)
 
     /** Smallest set of prefixes covering the whole address space except [excluded]. */
     fun complement(excluded: List<String>, bits: Int): List<Route> {

@@ -20,6 +20,7 @@ import androidx.compose.material.icons.automirrored.filled.ArrowBack
 import androidx.compose.material.icons.filled.AccountCircle
 import androidx.compose.material.icons.filled.BugReport
 import androidx.compose.material.icons.filled.DataUsage
+import androidx.compose.material.icons.filled.Hub
 import androidx.compose.material.icons.filled.Shield
 import androidx.compose.material.icons.filled.Backup
 import androidx.compose.material.icons.automirrored.filled.CallSplit
@@ -68,7 +69,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 enum class SettingsPage(val title: String) {
-    VPN("VPN"), SPLIT("Split tunnelling"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced"), DIAGNOSTICS("Diagnostics")
+    VPN("VPN"), TAILNET("Tailnet"), SPLIT("Split tunnelling"), PROTECTION("Protection"), REPUTATION("IP reputation"), BACKUP("Backup & transfer"), USAGE("Data usage"), ADVANCED("Advanced"), DIAGNOSTICS("Diagnostics")
 }
 
 /** Settings home: accounts plus one row per page. */
@@ -100,6 +101,9 @@ fun SettingsScreen(onBack: () -> Unit, onAccount: (Provider) -> Unit, onPage: (S
                 profiles.size.takeIf { it > 0 }?.let { "$it profile" + if (it > 1) "s" else "" },
             ).joinToString(" · ").ifEmpty { "Not set up" }
             SettingRow("VPN", vpnSummary, Icons.Default.VpnLock, onClick = { onPage(SettingsPage.VPN) })
+            GroupDivider()
+            val tailnetUi by c.tailnet.ui.collectAsState()
+            SettingRow("Tailnet", tailnetSummary(s.tailnet, tailnetUi.status), Icons.Default.Hub, onClick = { onPage(SettingsPage.TAILNET) })
             GroupDivider()
             val cs = s.connection
             SettingRow(
@@ -157,6 +161,7 @@ fun SettingsPageScreen(page: SettingsPage, onBack: () -> Unit) {
     Page(page.title, onBack) {
         when (page) {
             SettingsPage.VPN -> VpnSettings(s)
+            SettingsPage.TAILNET -> TailnetSettingsPage(s, ::update)
             SettingsPage.SPLIT -> SplitSettings(s, ::updateConn) { pickingApps = true }
             SettingsPage.PROTECTION -> {
                 SettingsGroup {

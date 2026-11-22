@@ -304,7 +304,7 @@ private fun PowerButton(status: TunnelStatus, onClick: () -> Unit) {
         Phase.CONNECTED -> if (status.trafficBlocked) StatusColors.pending else StatusColors.connected
         Phase.CONNECTING, Phase.ROTATING -> StatusColors.pending
         Phase.PROXY_DOWN, Phase.ERROR -> StatusColors.down
-        Phase.DISCONNECTED -> StatusColors.idle
+        Phase.DISCONNECTED, Phase.TAILNET_ONLY -> StatusColors.idle
     }
     val color by animateColorAsState(target, label = "power")
     Box(contentAlignment = Alignment.Center) {
@@ -333,6 +333,7 @@ private fun phaseLabel(s: TunnelStatus) = when (s.phase) {
     Phase.ROTATING -> "Getting a new IP…"
     Phase.PROXY_DOWN -> "Proxy down · traffic blocked"
     Phase.ERROR -> "Connection failed"
+    Phase.TAILNET_ONLY -> "Proxy off · tailnet on"
 }
 
 @Composable

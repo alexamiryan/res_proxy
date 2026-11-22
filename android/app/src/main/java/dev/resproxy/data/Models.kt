@@ -159,6 +159,8 @@ data class AppSettings(
      * exit IP until the session's lifetime runs out. "New IP" replaces the entry.
      */
     val sessions: Map<String, SavedSession> = emptyMap(),
+    /** This phone as a device in the user's tailnet (Android only; Chrome and iOS keep it for round trips). */
+    val tailnet: TailnetSettings = TailnetSettings(),
 ) {
     /** Lifetime the provider actually applies (Geonode caps sticky sessions at 24 h). */
     val effectiveLifetime: Int get() = connection.lifetimeMinutes.coerceIn(1, if (provider == Provider.GEONODE) 1440 else MAX_LIFETIME_MINUTES)
@@ -181,6 +183,23 @@ data class AppSettings(
         const val SCHEMA = 3
     }
 }
+
+/**
+ * Joining a tailnet. The auth key and the node's key are secrets kept per install ([TailnetRepository]), never in
+ * settings or backups.
+ */
+@Serializable
+data class TailnetSettings(
+    val enabled: Boolean = false,
+    /** Device name in the tailnet; empty = `resproxy-<phone model>`. */
+    val hostname: String = "",
+    /** Coordination server; empty = Tailscale. Set for Headscale. */
+    val controlUrl: String = "",
+    /** Inbound: peers reach services on the phone that listen on all interfaces, on any port. */
+    val acceptInbound: Boolean = true,
+    /** Inbound: these ports also reach services that listen on 127.0.0.1 only (explicit opt-in). */
+    val loopbackPorts: Set<Int> = emptySet(),
+)
 
 @Serializable
 data class SavedSession(val id: String, val createdAt: Long, val lifetimeMinutes: Int) {

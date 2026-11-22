@@ -50,6 +50,15 @@ export interface ConnectionSettings {
 
 export interface SavedSession { id: string; createdAt: number; lifetimeMinutes: number }
 
+/** Android's tailnet membership (kept for round trips; the extension doesn't use it). */
+export interface TailnetSettings {
+  enabled: boolean
+  hostname: string
+  controlUrl: string
+  acceptInbound: boolean
+  loopbackPorts: number[]
+}
+
 export interface AppSettings {
   schema: number
   provider: Provider
@@ -69,6 +78,7 @@ export interface AppSettings {
   vpnExit: string
   bypassLan: boolean
   sessions: Record<string, SavedSession>
+  tailnet: TailnetSettings
   /** Unknown fields from newer app versions are kept so they survive an import/export round trip. */
   [extra: string]: unknown
 }
@@ -121,6 +131,9 @@ export const defaultConnection = (): ConnectionSettings => ({
   sites: [],
 })
 
+export const defaultTailnet = (): TailnetSettings =>
+  ({ enabled: false, hostname: '', controlUrl: '', acceptInbound: true, loopbackPorts: [] })
+
 export const defaultSettings = (): AppSettings => ({
   schema: SCHEMA,
   provider: 'IPROYAL',
@@ -140,6 +153,7 @@ export const defaultSettings = (): AppSettings => ({
   vpnExit: '',
   bypassLan: true,
   sessions: {},
+  tailnet: defaultTailnet(),
 })
 
 export function locationLabel(l: Location): string {
@@ -215,6 +229,22 @@ function normConnection(v: unknown): ConnectionSettings {
   }
 }
 
+function normTailnet(v: unknown): TailnetSettings {
+  const o = isObj(v) ? v : {}
+  const d = defaultTailnet()
+  const ports = Array.isArray(o.loopbackPorts)
+    ? [...new Set(o.loopbackPorts.filter((p): p is number => typeof p === 'number' && Number.isInteger(p) && p > 0 && p < 65536))].sort((a, b) => a - b)
+    : []
+  return {
+    ...(o as Partial<TailnetSettings>),
+    enabled: bool(o.enabled, d.enabled),
+    hostname: str(o.hostname),
+    controlUrl: str(o.controlUrl),
+    acceptInbound: bool(o.acceptInbound, d.acceptInbound),
+    loopbackPorts: ports,
+  }
+}
+
 /** Fills defaults and applies the same schema upgrades as Android's SettingsRepository. */
 export function normSettings(v: unknown): AppSettings {
   const o = isObj(v) ? v : {}
@@ -249,6 +279,7 @@ export function normSettings(v: unknown): AppSettings {
     vpnExit: str(o.vpnExit),
     bypassLan: bool(o.bypassLan, d.bypassLan),
     sessions,
+    tailnet: normTailnet(o.tailnet),
   }
   // A missing object (fresh install) is already current; only stored/imported data is upgraded.
   if (!isObj(v)) return d

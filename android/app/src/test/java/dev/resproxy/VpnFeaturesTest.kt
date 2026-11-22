@@ -45,11 +45,12 @@ class VpnFeaturesTest {
         for (ip in listOf("192.168.1.1", "10.20.30.40", "172.16.5.5", "172.31.255.255", "169.254.1.1", "224.0.0.251")) {
             assertFalse(ip, contains(v4, ip))
         }
-        for (ip in listOf("8.8.8.8", "1.1.1.1", "172.32.0.1", "100.64.0.5", "198.18.0.2", "223.255.255.255", "11.0.0.1")) {
+        for (ip in listOf("8.8.8.8", "1.1.1.1", "172.32.0.1", "100.64.0.5", "198.18.0.2", "198.19.3.4", "223.255.255.255", "11.0.0.1")) {
             assertTrue(ip, contains(v4, ip))
         }
         val v6 = Routes.v6(bypassLan = true)
         assertFalse(contains(v6, "fe80::1")); assertFalse(contains(v6, "fd12::1"))
+        assertTrue("tailnet IPv6 stays routed", contains(v6, "fd7a:115c:a1e0:ab12::5"))
         assertTrue(contains(v6, "2a00:1450::1"))
         assertEquals(listOf(Routes.Route("0.0.0.0", 0)), Routes.v4(false))
     }

@@ -45,6 +45,9 @@ class AppContainer(context: Context) {
     val settings = SettingsRepository(context.dataStore, secrets)
     val stats = StatsRepository(context.dataStore)
     val vpn = VpnRepository(context.dataStore, secrets)
+    val tailnetSecrets = dev.resproxy.data.TailnetRepository(context.dataStore, secrets)
+    /** This install's tailnet node (runs inside the tunnel service). */
+    val tailnet = dev.resproxy.vpn.TailnetController(context.applicationContext, settings, tailnetSecrets)
     val mullvad = MullvadClient(File(context.filesDir, "mullvad_relays.json"))
     val latency = dev.resproxy.net.LatencyProbe()
     val reputation = ReputationRepository(settings)

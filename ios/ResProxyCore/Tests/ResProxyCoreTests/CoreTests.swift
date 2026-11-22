@@ -113,6 +113,16 @@ final class SettingsTests: XCTestCase {
         XCTAssertEqual(try decode(#"{"schema":3,"connection":{"lifetimeMinutes":1440}}"#).connection.lifetimeMinutes, 1440)
     }
 
+    func testKeepsAndroidTailnetSettings() throws {
+        XCTAssertEqual(try decode(#"{"schema":3}"#).tailnet, TailnetSettings())
+        let t = try decode(#"{"tailnet":{"enabled":true,"hostname":"phone","controlUrl":"https://hs.example","acceptInbound":false,"loopbackPorts":[8022,22,8022,0]}}"#).tailnet
+        XCTAssertTrue(t.enabled)
+        XCTAssertEqual(t.hostname, "phone")
+        XCTAssertEqual(t.controlUrl, "https://hs.example")
+        XCTAssertFalse(t.acceptInbound)
+        XCTAssertEqual(t.loopbackPorts, [22, 8022])
+    }
+
     func testStickySessionsPerProviderAndLocation() {
         let now: Int64 = 1_000_000_000
         var base = AppSettings()

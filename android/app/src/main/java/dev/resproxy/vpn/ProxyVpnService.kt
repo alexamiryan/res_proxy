@@ -34,6 +34,9 @@ import dev.resproxy.net.LocalSocksServer
 import dev.resproxy.net.ProxyAuthException
 import dev.resproxy.net.ProxyProbe
 import dev.resproxy.net.RelayHealth
+import dev.resproxy.net.SystemDns
+import dev.resproxy.net.Tailnet
+import dev.resproxy.net.TailnetDns
 import dev.resproxy.net.exitNodeDead
 import dev.resproxy.net.TrafficGate
 import dev.resproxy.net.Upstream
@@ -82,7 +85,7 @@ class ProxyVpnService : VpnService() {
         DiagLog.log("background job failed, reconnecting", e)
         scope.launch {
             delay(3000)
-            if (container.settings.current().wasConnected) connect("after an error")
+            if (container.settings.current().let { it.wasConnected || it.tailnet.enabled }) connect("after an error")
         }
     }
     private val scope: CoroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.IO + crashHandler)
@@ -105,6 +108,11 @@ class ProxyVpnService : VpnService() {
     @Volatile private var killSwitch = true
     /** The user turned the tunnel on and hasn't turned it off (`wasConnected`): keep it running. */
     @Volatile private var wantConnected = false
+    /** The tailnet is on: with the proxy off the service still runs, as the tailnet-only VPN. */
+    @Volatile private var tailnetWanted = false
+    /** What runs is the tailnet-only VPN (proxy off): only tailnet addresses in the TUN, no proxy. */
+    private var tailnetOnly = false
+    private val tailnetDns by lazy { TailnetDns(Tailnet::lookup) { SystemDns.query(this, it) } }
     /** Disconnect / revoke in progress: don't restart. */
     @Volatile private var userStopped = false
     private var reconnectFailures = 0
@@ -122,6 +130,9 @@ class ProxyVpnService : VpnService() {
     @Volatile private var waitingForUser = false
     private var lastCheckKick = 0L
     private val relayHealth = RelayHealth()
+    /** Tailnet bytes through the relays (apps' upload / download): not proxy traffic, kept out of the usage. */
+    private val tailnetUp = java.util.concurrent.atomic.AtomicLong()
+    private val tailnetDown = java.util.concurrent.atomic.AtomicLong()
     /** EWMA of proxy handshake round trips (ms). */
     @Volatile private var proxyRtt: Double? = null
     private var chainStartedAt = 0L
@@ -140,15 +151,33 @@ class ProxyVpnService : VpnService() {
         alive = true
         log("service created")
         scope.launch {
-            container.settings.settings.collect { killSwitch = it.killSwitch; bypassLan = it.bypassLan; wantConnected = it.wasConnected }
+            container.settings.settings.collect {
+                killSwitch = it.killSwitch; bypassLan = it.bypassLan; wantConnected = it.wasConnected; tailnetWanted = it.tailnet.enabled
+            }
+        }
+        // With the proxy off, the tailnet toggle starts and stops the tailnet-only VPN.
+        scope.launch {
+            container.settings.settings.map { it.tailnet.enabled }.distinctUntilChanged().drop(1).collect { on ->
+                val s = container.settings.current()
+                if (s.wasConnected) return@collect
+                if (!on) {
+                    log("tailnet turned off with the proxy off: stopping")
+                    stopEverything()
+                } else if (!tailnetOnly) {
+                    connect("tailnet turned on")
+                }
+            }
         }
         scope.launch { watchSettings() }
         scope.launch { watchApiKeys() }
         scope.launch { supervise() }
+        // The tailnet node lives as long as the service (while the tailnet is on), independent of reconnects and modes.
+        container.tailnet.bind(scope)
         // Every phase change and its reason goes to the diagnostics log.
         scope.launch {
             TunnelState.status.map { it.phase to it.message }.distinctUntilChanged().collect { (phase, msg) ->
                 DiagLog.log("status: $phase" + (msg?.let { " — $it" } ?: ""))
+                getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, buildNotification())
             }
         }
         // Unlocking the phone: retry right away instead of waiting for the next backoff step.
@@ -166,17 +195,17 @@ class ProxyVpnService : VpnService() {
         log("start command: ${intent?.action ?: "sticky restart"}")
         // A command for a tunnel that isn't running: stop again, unless the tunnel should be on (the supervisor
         // brings it back; stopping here would destroy the service mid-reconnect).
-        fun idle() { if (!wantConnected) stopService() }
+        fun idle() { if (!wanted()) stopService() }
         when (intent?.action) {
+            // The proxy goes off. With the tailnet on, the service stays as the tailnet-only VPN.
             ACTION_DISCONNECT -> scope.launch {
-                userStopped = true
                 wantConnected = false
                 container.settings.update { it.copy(wasConnected = false) }
                 log("disconnected by the user")
-                DeadManAlarm.disarm(this@ProxyVpnService)
-                lock.withLock { teardown() }
-                stopService()
+                if (container.settings.current().tailnet.enabled) connect("proxy turned off, the tailnet stays on")
+                else stopEverything()
             }
+            ACTION_TAILNET_OFF -> scope.launch { container.settings.update { it.copy(tailnet = it.tailnet.copy(enabled = false)) } }
             ACTION_ROTATE -> if (!active) idle() else scope.launch {
                 switchSession(Presets.newSessionId())
                 launchCheck(force = true)
@@ -187,19 +216,32 @@ class ProxyVpnService : VpnService() {
                 launchCheck(force = false)
             }
             ACTION_RECHECK -> if (!active) idle() else launchCheck(force = true)
-            // ACTION_CONNECT, always-on start (SERVICE_INTERFACE) and sticky restarts (null intent)
-            else -> {
-                userStopped = false
-                // Always-on, the update receiver and the watchdog can all start us at once: connect once.
-                val now = System.currentTimeMillis()
-                if (now - lastStartAt < 5_000) log("duplicate start ignored")
-                else {
-                    lastStartAt = now
-                    scope.launch { connect(intent?.action?.substringAfterLast('.') ?: "sticky restart") }
-                }
-            }
+            // ACTION_RESUME (keep-alive, the Tailnet page): whatever the user has on, only if nothing runs yet. Toggling
+            // the tailnet with the proxy up must not reconnect the proxy.
+            ACTION_RESUME -> if (active || tailnetOnly || lock.isLocked) log("resume: already running") else start(intent)
+            // ACTION_CONNECT turns the proxy on. Always-on starts (SERVICE_INTERFACE) and sticky restarts (null intent)
+            // bring back whatever the user has on; Always-on turns the proxy on when nothing is.
+            else -> start(intent)
         }
         return START_STICKY
+    }
+
+    private fun start(intent: Intent?) {
+        userStopped = false
+        val connectProxy = intent?.action == ACTION_CONNECT
+        // Always-on, the update receiver and the watchdog can all start us at once: connect once. Turning the proxy on
+        // while only the tailnet runs is never a duplicate.
+        val now = System.currentTimeMillis()
+        if (now - lastStartAt < 5_000 && !(connectProxy && !wantConnected)) return log("duplicate start ignored")
+        lastStartAt = now
+        scope.launch {
+            val s = container.settings.current()
+            if (connectProxy || (intent?.action == SERVICE_INTERFACE && !s.wasConnected && !s.tailnet.enabled)) {
+                wantConnected = true
+                container.settings.update { it.copy(wasConnected = true) }
+            }
+            connect(intent?.action?.substringAfterLast('.') ?: "sticky restart")
+        }
     }
 
     /**
@@ -213,7 +255,7 @@ class ProxyVpnService : VpnService() {
             log("VPN revoked by Android (permission ${if (consent) "still granted, reconnecting" else "gone, stopping"})")
             lock.withLock { teardown() }
             if (consent) {
-                TunnelState.update { it.copy(phase = Phase.PROXY_DOWN, message = "Android stopped the VPN — reconnecting") }
+                if (wantConnected) TunnelState.update { it.copy(phase = Phase.PROXY_DOWN, message = "Android stopped the VPN — reconnecting") }
                 kick("revoked")
             } else {
                 userStopped = true
@@ -226,12 +268,13 @@ class ProxyVpnService : VpnService() {
     }
 
     override fun onDestroy() {
-        val restart = wantConnected && !userStopped
+        val restart = wanted() && !userStopped
         log("service destroyed" + if (restart) " while it should be on — restarting soon" else "")
         if (restart) KeepAliveJob.scheduleSoon(this) else DeadManAlarm.disarm(this)
         unlockReceiver?.let { runCatching { unregisterReceiver(it) } }
         unlockReceiver = null
         teardown()
+        container.tailnet.unbindNow()
         scope.cancel()
         alive = false
         super.onDestroy()
@@ -239,9 +282,20 @@ class ProxyVpnService : VpnService() {
 
     private fun log(message: String, e: Throwable? = null) = DiagLog.log(message, e)
 
+    /** The service should run: the proxy is on, or the tailnet is (then as the tailnet-only VPN). */
+    private fun wanted() = wantConnected || tailnetWanted
+
+    /** Neither proxy nor tailnet is wanted any more: stop for good. */
+    private suspend fun stopEverything() {
+        userStopped = true
+        DeadManAlarm.disarm(this)
+        lock.withLock { teardown() }
+        stopService()
+    }
+
     /** Retry now: reset the reconnect backoff and make the health loop probe on its next tick. */
     private fun kick(why: String) {
-        if (!wantConnected) return
+        if (!wanted()) return
         log("kick: $why")
         nextAttemptAt = 0
         kicked = true
@@ -255,14 +309,14 @@ class ProxyVpnService : VpnService() {
     private suspend fun supervise() {
         while (scope.isActive) {
             delay(SUPERVISE_TICK_MS)
-            if (wantConnected && !userStopped) DeadManAlarm.arm(this) else DeadManAlarm.disarm(this)
-            val plumbingUp = profile != null && workers.isNotEmpty() && workers.all { it.isActive }
+            if (wanted() && !userStopped) DeadManAlarm.arm(this) else DeadManAlarm.disarm(this)
+            val plumbingUp = (profile != null || tailnetOnly) && workers.isNotEmpty() && workers.all { it.isActive }
             if (plumbingUp) {
                 if (TunnelState.status.value.phase == Phase.CONNECTED) reconnectFailures = 0
                 continue
             }
             val now = System.currentTimeMillis()
-            if (!KeepAlive.shouldReconnect(wantConnected && !userStopped, plumbingUp, lock.isLocked, now, nextAttemptAt)) continue
+            if (!KeepAlive.shouldReconnect(wanted() && !userStopped, plumbingUp, lock.isLocked, now, nextAttemptAt)) continue
             reconnectFailures++
             nextAttemptAt = now + KeepAlive.backoffMs(reconnectFailures)
             connect("keep-alive: tunnel wasn't running, attempt $reconnectFailures")
@@ -375,6 +429,12 @@ class ProxyVpnService : VpnService() {
         run {
             teardown()
             var s = container.settings.current()
+            if (!s.wasConnected) {
+                if (s.tailnet.enabled) return connectTailnetOnly()
+                log("neither the proxy nor the tailnet is on: stopping")
+                userStopped = true
+                return stopService()
+            }
             if (s.connection.sticky) {
                 // Remember the session for this provider + location (new one if none), so switching back reuses it.
                 container.settings.update { it.withSession(it.sessionId.ifEmpty { Presets.newSessionId() }) }
@@ -382,6 +442,11 @@ class ProxyVpnService : VpnService() {
             }
             val p = container.connectionProfile()
             if (p == null) {
+                // Nothing to retry until the user adds an account: the proxy goes back off (the tailnet stays, if on).
+                wantConnected = false
+                container.settings.update { it.copy(wasConnected = false) }
+                log("no ${s.provider.label} account: the proxy stays off")
+                if (s.tailnet.enabled) return connectTailnetOnly()
                 return fail("Add your ${s.provider.label} account first")
             }
             profile = p
@@ -389,8 +454,6 @@ class ProxyVpnService : VpnService() {
             TunnelState.update {
                 TunnelStatus(phase = Phase.CONNECTING, profileId = p.id, profileName = displayName(p, s.location.label), sessionId = p.sessionId)
             }
-            wantConnected = true
-            container.settings.update { it.copy(wasConnected = true) }
             val full = p.tunnelMode == TunnelMode.FULL
             // Full tunnel: capture all traffic of the routed apps before any upstream I/O.
             if (full) {
@@ -425,6 +488,68 @@ class ProxyVpnService : VpnService() {
                 if (it.phase == Phase.PROXY_DOWN) it else it.copy(phase = Phase.CONNECTED, connectedAt = System.currentTimeMillis(), message = null)
             }
             launchCheck(force = false)
+        }
+    }
+
+    /**
+     * Proxy off, tailnet on: a VPN that carries only tailnet addresses (like the Tailscale app). Everything else goes
+     * direct; no proxy, gate, checks or repairs. DNS goes to [Tailnet.DNS] (routed into the TUN), which the relay answers:
+     * tailnet names from the node, the rest from the network's resolver.
+     */
+    private fun connectTailnetOnly() {
+        tailnetOnly = true
+        TunnelState.update { TunnelStatus(phase = Phase.CONNECTING, trafficBlocked = false) }
+        tun = buildTailnetTun() ?: return fail("VPN permission not granted")
+        socksBridge = LocalSocksServer(
+            null, relayHealth, gate = null, tailnet = container.tailnet::route, tailnetUp = tailnetUp, tailnetDown = tailnetDown,
+            localDns = tailnetDns::answer,
+        ).also { it.start() }
+        startHev()
+        workers = listOf(scope.launch { tailnetOnlyLoop() })
+        log("tailnet-only VPN up (proxy off)" + if (lockdown()) "; \"Block connections without VPN\" is on, so nothing else has internet" else "")
+        TunnelState.update {
+            TunnelStatus(phase = Phase.TAILNET_ONLY, trafficBlocked = false, connectedAt = System.currentTimeMillis(), message = if (lockdown()) LOCKDOWN_MESSAGE else null)
+        }
+    }
+
+    private fun buildTailnetTun(): ParcelFileDescriptor? {
+        val b = Builder()
+            .setSession("Tailnet")
+            .setMtu(HevConfig.MTU)
+            .addAddress(HevConfig.TUN_V4, 32)
+            .addAddress(HevConfig.TUN_V6, 128)
+            .addDnsServer(Tailnet.DNS)
+            .addDisallowedApplication(packageName)
+            .setConfigureIntent(
+                PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE)
+            )
+        Routes.TAILNET.forEach { b.addRoute(it.address, it.prefix) }
+        return b.establish()
+    }
+
+    /** Tailnet-only VPN: restarts a tunnel engine that died and keeps the notification's tailnet address current. */
+    private suspend fun tailnetOnlyLoop() {
+        val nm = getSystemService(NotificationManager::class.java)
+        var shown: String? = null
+        while (scope.isActive) {
+            delay(TICK_MS)
+            if (hevRunning && !TunnelNative.TProxyIsRunning()) {
+                log("tunnel engine stopped by itself, reconnecting")
+                reconnectAsync("$ENGINE_REASON stopped")
+                return
+            }
+            val text = tailnetLine()
+            if (text != shown) { shown = text; nm.notify(NOTIFICATION_ID, buildNotification()) }
+        }
+    }
+
+    private fun tailnetLine(): String {
+        val st = container.tailnet.ui.value.status
+        return when {
+            st == null -> "Starting…"
+            st.running -> listOfNotNull(st.dnsName.substringBefore('.').ifEmpty { null }, st.ips.firstOrNull()).joinToString(" · ")
+            st.needsLogin -> "Log in to add this phone (Settings → Tailnet)"
+            else -> "Connecting…"
         }
     }
 
@@ -558,6 +683,7 @@ class ProxyVpnService : VpnService() {
         proxyRtt = null
         failedRepairs = 0
         hevBase = 0L to 0L; hevLast = 0L to 0L
+        tailnetOnly = false
         TunnelState.update { if (it.phase == Phase.ERROR) it else TunnelStatus() }
     }
 
@@ -575,9 +701,12 @@ class ProxyVpnService : VpnService() {
      * permission, stop.
      */
     private fun fail(message: String) {
-        val retry = wantConnected && !userStopped && VpnService.prepare(this) == null
+        val retry = wanted() && !userStopped && VpnService.prepare(this) == null
         log("failed: $message" + if (retry) " (retrying)" else " (stopping)")
-        if (retry) {
+        if (retry && !wantConnected) {
+            // The tailnet-only VPN failed (the proxy is off, nothing is blocked).
+            TunnelState.update { TunnelStatus(phase = Phase.TAILNET_ONLY, message = "Tailnet: $message — retrying", trafficBlocked = false) }
+        } else if (retry) {
             TunnelState.update {
                 TunnelStatus(phase = Phase.PROXY_DOWN, message = "$message — retrying", trafficBlocked = true, repairs = it.repairs)
             }
@@ -621,9 +750,12 @@ class ProxyVpnService : VpnService() {
         if (p.tunnelMode == TunnelMode.FULL) {
             val bridge = socksBridge
             if (bridge != null) bridge.upstream = up
-            else socksBridge = LocalSocksServer(up, relayHealth, gate, lanDirect = { bypassLan }).also { it.start() }
+            else socksBridge = LocalSocksServer(
+                up, relayHealth, gate, lanDirect = { bypassLan },
+                tailnet = container.tailnet::route, tailnetUp = tailnetUp, tailnetDown = tailnetDown,
+            ).also { it.start() }
         } else {
-            systemProxy = LocalHttpProxy(up, gate).also { it.start() }
+            systemProxy = LocalHttpProxy(up, gate, container.tailnet::route, tailnetUp, tailnetDown).also { it.start() }
         }
     }
 
@@ -819,10 +951,20 @@ class ProxyVpnService : VpnService() {
         }
     }
 
-    /** Monotonic (down, up) byte counters; hev counters reset on restart, so we track deltas across restarts. */
+    /**
+     * Monotonic (down, up) byte counters of proxy traffic. hev counts everything apps send through the TUN, tailnet
+     * traffic included, so the relay's tailnet bytes are taken out (proxy-only mode counts them separately already).
+     */
+    private fun counters(): Pair<Long, Long> {
+        val (down, up) = engineCounters()
+        if (profile?.tunnelMode != TunnelMode.FULL) return down to up
+        return (down - tailnetDown.get()) to (up - tailnetUp.get())
+    }
+
+    /** hev counters reset on restart, so we track deltas across restarts. */
     private var hevBase = 0L to 0L
     private var hevLast = 0L to 0L
-    private fun counters(): Pair<Long, Long> {
+    private fun engineCounters(): Pair<Long, Long> {
         val p = profile ?: return hevLast
         if (p.tunnelMode == TunnelMode.PROXY_ONLY) {
             val h = systemProxy ?: return hevLast
@@ -1103,6 +1245,19 @@ class ProxyVpnService : VpnService() {
 
     private fun buildNotification(): Notification {
         val s = TunnelState.status.value
+        if (s.phase == Phase.TAILNET_ONLY) {
+            return NotificationCompat.Builder(this, App.CHANNEL_VPN)
+                .setSmallIcon(R.drawable.ic_shield)
+                .setContentTitle(if (lockdown()) "Tailnet on · no internet (Block connections without VPN)" else "Tailnet on · proxy off")
+                .setContentText(s.message?.takeIf { it.startsWith("Tailnet:") } ?: tailnetLine())
+                .setOngoing(true)
+                .setOnlyAlertOnce(true)
+                .setSilent(true)
+                .setContentIntent(PendingIntent.getActivity(this, 0, Intent(this, MainActivity::class.java), PendingIntent.FLAG_IMMUTABLE))
+                .addAction(0, "Connect proxy", servicePending(ACTION_CONNECT, 3))
+                .addAction(0, "Turn off tailnet", servicePending(ACTION_TAILNET_OFF, 4))
+                .build()
+        }
         val title = when (s.phase) {
             Phase.CONNECTED -> if (s.trafficBlocked) "Traffic blocked until a clean IP is found" else "Connected · ${s.profileName ?: ""}"
             Phase.CONNECTING -> "Connecting…"
@@ -1154,6 +1309,11 @@ class ProxyVpnService : VpnService() {
         const val ACTION_ROTATE = "dev.resproxy.ROTATE"
         const val ACTION_APPLY_LOCATION = "dev.resproxy.APPLY_LOCATION"
         const val ACTION_RECHECK = "dev.resproxy.RECHECK"
+        /** Start whatever the user has on (proxy, or only the tailnet); never turns the proxy on by itself. */
+        const val ACTION_RESUME = "dev.resproxy.RESUME"
+        const val ACTION_TAILNET_OFF = "dev.resproxy.TAILNET_OFF"
+        private const val LOCKDOWN_MESSAGE =
+            "\"Block connections without VPN\" is on in Android settings, so with the proxy off only the tailnet works"
         private const val NOTIFICATION_ID = 1
         private const val ALERT_ID = 2
         private const val TAG = "ResProxy"
