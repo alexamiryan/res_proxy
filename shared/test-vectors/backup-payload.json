@@ -33,7 +33,8 @@
     "bypassLan": false,
     "sessions": {
       "GEONODE|fr||paris": { "id": "ab12cd34", "createdAt": 1762290000000, "lifetimeMinutes": 720 }
-    }
+    },
+    "tailnet": { "enabled": false, "hostname": "", "controlUrl": "", "acceptInbound": true, "loopbackPorts": [] }
   },
   "accounts": [
     { "provider": "IPROYAL", "username": "ipuser", "password": "ippass", "apiToken": "iptoken", "apiLogin": "", "apiPassword": "" },

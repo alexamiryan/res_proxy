@@ -89,6 +89,7 @@ Rules every implementation follows:
 | `vpnExit` | string | `wg:<profile id>` or `mullvad:<country \| country-city \| relay hostname>` |
 | `bypassLan` | bool, true | |
 | `sessions` | `{"PROVIDER\|country\|state\|city": {id, createdAt, lifetimeMinutes}}` | sticky session per place; expired one minute early |
+| `tailnet` | `{enabled: false, hostname: "", controlUrl: "", acceptInbound: true, loopbackPorts: []}` | Android only (Chrome and iOS keep it). `hostname` empty = `resproxy-<model>`, `controlUrl` empty = Tailscale, `loopbackPorts` sorted unique 1–65535. The auth key and node key are per install and never in a backup |
 
 ## Provider presets
 

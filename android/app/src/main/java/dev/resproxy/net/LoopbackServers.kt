@@ -29,6 +29,8 @@ abstract class LoopbackServer(private val name: String) {
     private val server = ServerSocket(0, 128, InetAddress.getByName("127.0.0.1"))
     private val pool: ExecutorService = Executors.newCachedThreadPool { r -> Thread(r, "$name-conn").apply { isDaemon = true } }
     private val open = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
+    /** Tailnet connections: not internet traffic, so a new or bad exit IP doesn't drop them ([closeConnections]). */
+    private val kept = Collections.newSetFromMap(java.util.concurrent.ConcurrentHashMap<Socket, Boolean>())
     @Volatile private var running = false
 
     val port: Int get() = server.localPort
@@ -69,14 +71,25 @@ abstract class LoopbackServer(private val name: String) {
     fun stop() {
         running = false
         runCatching { server.close() }
-        closeConnections()
+        // Everything, tailnet connections included (closeConnections keeps those).
+        for (s in open) s.closeQuietly()
         pool.shutdownNow()
     }
 
-    /** Drops every open connection (e.g. the exit IP turned out bad) but keeps accepting new ones. */
+    /** Drops every open connection (e.g. the exit IP turned out bad) but keeps accepting new ones. Tailnet ones stay. */
     fun closeConnections() {
         // The set changes while connections finish; its own iterator is safe for that (toList() isn't).
-        for (s in open) s.closeQuietly()
+        for (s in open) if (s !in kept) s.closeQuietly()
+    }
+
+    /** Relays a tailnet connection: kept across exit IP changes, counted in [up] / [down] instead of the proxy totals. */
+    protected fun relayTailnet(client: Socket, remote: Socket, clientIn: InputStream, up: AtomicLong, down: AtomicLong) {
+        kept += client; kept += remote
+        try {
+            relay(client, remote, clientIn, upTotal = up, downTotal = down)
+        } finally {
+            kept -= client; kept -= remote
+        }
     }
 
     protected abstract fun handle(client: Socket)
@@ -88,14 +101,14 @@ abstract class LoopbackServer(private val name: String) {
      */
     protected fun relay(
         client: Socket, remote: Socket, clientIn: InputStream = client.getInputStream(), upCount: AtomicLong = AtomicLong(),
-        onFirstDown: () -> Unit = {},
+        upTotal: AtomicLong = bytesUp, downTotal: AtomicLong = bytesDown, onFirstDown: () -> Unit = {},
     ): Pair<Long, Long> {
         open += remote
         val reaper = java.util.concurrent.atomic.AtomicReference<ScheduledFuture<*>?>()
         val down = AtomicLong()
         try {
             val up = pool.submit {
-                copy(clientIn, remote.getOutputStream(), bytesUp, upCount, null)
+                copy(clientIn, remote.getOutputStream(), upTotal, upCount, null)
                 runCatching { remote.shutdownOutput() }
                 var seen = down.get()
                 reaper.set(runCatching {
@@ -105,7 +118,7 @@ abstract class LoopbackServer(private val name: String) {
                     }, HALF_CLOSE_IDLE_MS, HALF_CLOSE_IDLE_MS, TimeUnit.MILLISECONDS)
                 }.getOrNull())
             }
-            copy(remote.getInputStream(), client.getOutputStream(), bytesDown, down, onFirstDown)
+            copy(remote.getInputStream(), client.getOutputStream(), downTotal, down, onFirstDown)
             runCatching { client.shutdownOutput() }
             runCatching { up.get() }
             return upCount.get() to down.get()
@@ -195,6 +208,11 @@ class LocalSocksServer(
     private val lanResolve: (String) -> InetAddress? = { LanTargets.resolve(it) },
     private val gateWaitMs: Long = GATE_WAIT_MS,
     private val noResponseMs: Long = NO_RESPONSE_MS,
+    /** The tailnet route while the tailnet is on, else null. */
+    private val tailnet: () -> TailnetRoute? = { null },
+    /** Tailnet bytes (apps' upload / download), kept out of the proxy usage. */
+    val tailnetUp: AtomicLong = AtomicLong(),
+    val tailnetDown: AtomicLong = AtomicLong(),
 ) : LoopbackServer("socks-relay") {
 
     override fun handle(client: Socket) {
@@ -222,6 +240,19 @@ class LocalSocksServer(
     }
 
     private fun connect(client: Socket, inp: DataInputStream, out: OutputStream, host: String, port: Int) {
+        // Tailnet first: not internet (no gate, no exit IP, not proxy health), and a bare MagicDNS name like `nas` would
+        // otherwise count as a LAN name.
+        val tn = tailnet()
+        if (tn != null && tn.matches(host)) {
+            val remote = try {
+                tn.open(host, port)
+            } catch (e: IOException) {
+                out.write(reply((e as? SocksRefusedException)?.code ?: 4)); return
+            }
+            out.write(reply(0))
+            relayTailnet(client, remote, inp, tailnetUp, tailnetDown)
+            return
+        }
         if (isFakeDnsIp(host)) {
             // Only the tunnel engine hands these out; one it can't map back to a name is useless to any proxy.
             health.staleFakeIps.incrementAndGet()
@@ -261,7 +292,7 @@ class LocalSocksServer(
         }
         val watchdog = runCatching { timers.schedule(noResponse, noResponseMs, TimeUnit.MILLISECONDS) }.getOrNull()
         try {
-            relay(client, remote, inp, upCount = upCount) { gotData.set(true); if (counted.compareAndSet(false, true)) health.success() }
+            relay(client, remote, inp, upCount = upCount, onFirstDown = { gotData.set(true); if (counted.compareAndSet(false, true)) health.success() })
         } finally {
             watchdog?.cancel(false)
         }
@@ -290,11 +321,11 @@ class LocalSocksServer(
         /** An app that sent data and got nothing back for this long has a dead connection. */
         const val NO_RESPONSE_MS = 20_000L
 
-        /** hev's fake-IP DNS range (HevConfig mapdns: 100.64.0.0/10). */
+        /** hev's fake-IP DNS range (HevConfig mapdns: 198.19.0.0/16). */
         fun isFakeDnsIp(host: String): Boolean {
             val p = host.split('.')
             if (p.size != 4 || p.any { it.toIntOrNull() !in 0..255 }) return false
-            return p[0] == "100" && p[1].toInt() in 64..127
+            return p[0] == "198" && p[1] == "19"
         }
     }
 }
@@ -304,7 +335,14 @@ class LocalSocksServer(
  * Used as the system HTTP proxy in proxy-only mode, and by the app itself for exit-IP and
  * health checks in every mode.
  */
-class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGate? = null) : LoopbackServer("http-proxy") {
+class LocalHttpProxy(
+    private val upstream: Upstream,
+    private val gate: TrafficGate? = null,
+    /** Proxy-only mode: tailnet targets skip the gate and the residential proxy. */
+    private val tailnet: () -> TailnetRoute? = { null },
+    private val tailnetUp: AtomicLong = AtomicLong(),
+    private val tailnetDown: AtomicLong = AtomicLong(),
+) : LoopbackServer("http-proxy") {
 
     override fun handle(client: Socket) {
         val inp = client.getInputStream()
@@ -317,10 +355,11 @@ class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGa
 
         if (method.equals("CONNECT", ignoreCase = true)) {
             val (host, port) = splitAuthority(target, 443) ?: return respond(out, 400, "Bad Request")
-            val remote = openOr502(out, host, port) ?: return
+            val tn = tailnet()?.takeIf { it.matches(host) }
+            val remote = (if (tn != null) openTailnet(out, tn, host, port) else openOr502(out, host, port)) ?: return
             out.write("$version 200 Connection established\r\n\r\n".toByteArray())
             out.flush()
-            relay(client, remote, inp)
+            if (tn != null) relayTailnet(client, remote, inp, tailnetUp, tailnetDown) else relay(client, remote, inp)
             return
         }
 
@@ -335,9 +374,16 @@ class LocalHttpProxy(private val upstream: Upstream, private val gate: TrafficGa
                 .forEach { append(it).append("\r\n") }
             append("Connection: close\r\n\r\n")
         }
-        val remote = openOr502(out, uri.host, port) ?: return
+        val tn = tailnet()?.takeIf { it.matches(uri.host) }
+        val remote = (if (tn != null) openTailnet(out, tn, uri.host, port) else openOr502(out, uri.host, port)) ?: return
         remote.getOutputStream().apply { write(rewritten.toByteArray(Charsets.ISO_8859_1)); flush() }
-        relay(client, remote, inp)
+        if (tn != null) relayTailnet(client, remote, inp, tailnetUp, tailnetDown) else relay(client, remote, inp)
+    }
+
+    private fun openTailnet(out: OutputStream, tn: TailnetRoute, host: String, port: Int): Socket? = try {
+        tn.open(host, port)
+    } catch (e: IOException) {
+        respond(out, 502, "Bad Gateway", "Tailnet: ${e.message ?: "device not reachable"}"); null
     }
 
     private fun openOr502(out: OutputStream, host: String, port: Int): Socket? = try {

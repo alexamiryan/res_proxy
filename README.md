@@ -61,6 +61,7 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native) → LocalSocksServer re
 ```
 
 - **Full tunnel** (default): carries all TCP and UDP. DNS uses fake-IP mapping, so hostnames are resolved on the proxy side and DNS can't leak.
+- **Tailnet** (optional): connections to your tailnet's devices (100.x addresses and MagicDNS names) leave the relay through ResProxy's own Tailscale node instead of the proxy.
 - **Proxy only** (Android 10+): sets a system HTTP proxy that points at a local proxy, which adds your credentials. Only apps that honor the system proxy work. Everything else is blocked.
 - ResProxy leaves its own traffic out of the VPN. A local HTTP proxy on `127.0.0.1` adds your credentials. The app uses it for the exit-IP and health checks.
 
@@ -80,13 +81,14 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native) → LocalSocksServer re
 - **Kill switch**: a health probe runs every 30 s by default. While the proxy is down, the TUN stays up and traffic is dropped. The tunnel reconnects automatically when the proxy comes back. For full protection, also turn on Always-on VPN and "Block connections without VPN" in system settings.
 - **Backup & transfer**: export or import everything, encrypted with a passphrase you choose. Android 17 blocks app traffic between Android users, so profiles can't sync with each other directly. Move the file between profiles yourself.
 - **Split tunnelling, connect on boot, Quick Settings tile, live speed, and data usage per profile.**
+- **Tailnet** (Settings → Tailnet): the phone joins your Tailscale network by itself, so you don't need the Tailscale app (Android runs one VPN at a time). Log in in the browser or with an auth key; Headscale works with a custom coordination server. Apps reach tailnet devices by name or 100.x address, directly and without waiting for the reputation check; everything else still goes through the proxy. Devices in the tailnet can open services on the phone that listen on all interfaces (Termux SSH, Syncthing); services bound to 127.0.0.1 stay private unless you list their ports. TCP only for now. The node is Tailscale's userspace library (tsnet) in `native/wgbridge`, its key is stored encrypted per install, and log upload to Tailscale is off.
 - **VPN chain (WireGuard)**: import any number of WireGuard `.conf` profiles (e.g. from Proton), or add a Mullvad account by account number. Each install registers its own WireGuard key as a Mullvad device. Pick the VPN on the home screen: a profile, or a Mullvad country, city or server. The home screen shows ping to the VPN (in-tunnel ICMP to the VPN's DNS) and ping to the proxy (SOCKS5 auth round trip). Import a `.conf` and the proxy connection goes apps → TUN → WireGuard → residential proxy. WireGuard runs in-process (`native/wgbridge/`, wireguard-go + gVisor netstack exposing local TCP forwarders), so no second Android VPN is needed; the proxy hostname is resolved by the VPN's DNS inside the tunnel.
 
 ## Build
 
 **Android** (`android/`): JDK 21 (set in `gradle.properties`), the Android SDK and NDK 29, and Go (version per
 `native/wgbridge/go.mod`). Put the SDK and Go locations in `android/local.properties` (`sdk.dir=…`, `go.dir=…`);
-without Go the APK builds but WireGuard chaining is unavailable.
+without Go the APK builds but WireGuard chaining and the tailnet are unavailable.
 
 ```bash
 cd android && ./gradlew testDebugUnitTest assembleDebug     # app/build/outputs/apk/debug/app-debug.apk

@@ -146,7 +146,8 @@ class TrafficGateTest {
         assertTrue(LanTargets.resolve("fd0c:a635::1") != null)
         assertTrue(LanTargets.resolve("fe80::1") != null)
         assertNull(LanTargets.resolve("8.8.8.8"))
-        assertNull(LanTargets.resolve("100.64.0.3")) // hev fake-IP range, not LAN
+        assertNull(LanTargets.resolve("100.64.0.3")) // tailnet range, not LAN
+        assertNull(LanTargets.resolve("198.19.0.3")) // hev fake-IP range, not LAN
         assertNull(LanTargets.resolve("2001:db8::1"))
 
         val lookups = mutableListOf<String>()

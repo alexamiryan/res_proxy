@@ -8,26 +8,29 @@ same commit (a commit hook checks for this, see the end of this file).
 
 ResProxy sends traffic through residential proxies (IPRoyal, Geonode, custom), optionally reaching the proxy through
 a WireGuard VPN first (imported `.conf` profiles or a Mullvad account). It checks the exit IP's reputation
-(Clean / Suspicious / Bad) and can rotate the IP until the result is acceptable. One repo, several platforms:
+(Clean / Suspicious / Bad) and can rotate the IP until the result is acceptable. On Android it can also join the user's
+tailnet itself (Tailscale's tsnet), so the Tailscale app isn't needed next to it. One repo, several platforms:
 
 | Folder | Platform |
 |---|---|
 | `android/` | Sideloaded Android VPN app. Package `dev.resproxy`, minSdk 26, target/compileSdk 36 |
 | `chrome/` | Chrome MV3 extension (TypeScript + Preact, esbuild). Works in Edge/Brave/Chromium too |
-| `native/wgbridge/` | Go: Android WireGuard JNI lib (root package), `cmd/resproxy-helper` (native-messaging helper for the extension, and the iOS tunnel's data plane as a C archive), `cmd/wgtestserver` / `cmd/testproxy` (test peers) |
+| `native/wgbridge/` | Go: Android WireGuard + tailnet JNI lib (root package, `internal/tailnet`), `cmd/resproxy-helper` (native-messaging helper for the extension, and the iOS tunnel's data plane as a C archive), `cmd/wgtestserver` / `cmd/testproxy` / `cmd/tailnettest` (test peers) |
 | `shared/` | `FORMAT.md` (backup, settings schema, presets, verdict rules) + `test-vectors/` that every platform's tests read |
 | `ios/` | iOS app + packet tunnel extension (Swift/SwiftUI). Bundle `dev.resproxy` (+ `.tunnel`), iOS 16+, team DK366LFCDT |
 
 **Cross-platform rule:** anything in `shared/FORMAT.md` (backup format, settings fields and defaults, preset
 syntax, verdict rules) changes on every platform in the same commit, with the vectors regenerated. New settings
 fields get defaults and are added to Android's `Models.kt` even when only one platform uses them, so backups
-round-trip (e.g. `connection.sites` is Chrome-only, `connection.apps` Android-only).
+round-trip (e.g. `connection.sites` is Chrome-only, `connection.apps` and `tailnet` Android-only).
 
 ## Android traffic path
 
 ```
 apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServer relay (127.0.0.1)
      → [WireGuard forwarder 127.0.0.1 → wireguard-go/netstack] → residential proxy (SOCKS5 / HTTP CONNECT)
+                                                  └ tailnet targets → tailnet SOCKS5 front 127.0.0.1 → tsnet → peer
+tailnet peer → tsnet (fallback TCP handler) → TUN address 198.18.0.1:port (all-interfaces listeners) | 127.0.0.1:port (opt-in)
 ```
 
 - hev **always** talks to our Kotlin relay (`net/LoopbackServers.kt`), never directly to the proxy. Because
@@ -43,6 +46,18 @@ apps → TUN (VpnService) → hev-socks5-tunnel (native, JNI) → LocalSocksServ
 - Proxy-only mode: a system HTTP proxy points at `LocalHttpProxy`; apps that ignore it hit an unread TUN and
   are blocked.
 - `LocalHttpProxy` is also how the app does its own exit-IP checks and probes through the proxy.
+- **Tailnet** (`vpn/TailnetController.kt`, `net/Tailnet.kt`, Go `internal/tailnet`): ResProxy's own Tailscale node,
+  tsnet in `libwgbridge.so` (userspace netstack, no TUN). It runs while the service runs, the user wants the tunnel
+  (`wasConnected`) and `tailnet.enabled`; it has its own lifecycle and lock: repairs, reconnects, rotations, chain
+  rebuilds and `fail()` never touch it, Disconnect stops it. Both relays (`LocalSocksServer`, the proxy-only
+  `LocalHttpProxy`) ask `TailnetController.route()` first, before the gate, the fake-IP / LAN checks and relay health:
+  matching targets (100.64/10, fd7a:115c:a1e0::/48, names under the MagicDNS suffix, bare peer names) go to the Go
+  SOCKS5 front, which dials **only known peers** (never tsnet's `Server.Loopback`/`UserDial`: those send non-tailnet
+  addresses straight out of the app, past the proxy). While enabled but not running, tailnet IPs get reply 4. Tailnet
+  sockets are exempt from `closeConnections()` (rotations don't drop SSH sessions) and counted apart from proxy usage
+  (`counters()` subtracts them from hev's totals). Inbound: TCP to the node's IPs goes to the TUN address (only
+  services bound to all interfaces accept, like with the Tailscale app) or, for `loopbackPorts`, 127.0.0.1. The
+  node's underlay (control, DERP, peer UDP) goes direct, the app being outside its VPN. TCP only.
 
 ## Chrome traffic path
 
@@ -107,7 +122,8 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
    ungated `httpProxy`. Auto-rotate has **no limit** (10 quick tries, then one every 20 s; `maxRotations` is
    unused, kept for backups): once on, the tunnel keeps trying until an IP passes. Only a bad IP with auto-rotate
    off leaves traffic blocked until "New IP". Failed or UNKNOWN checks are retried by the health loop. Turning
-   checks off opens the gate.
+   checks off opens the gate. Tailnet traffic is the deliberate exception: it never uses the exit IP, so it skips the
+   gate (and works while the proxy is down, as long as the relay runs).
 4. **Kill switch** on (default): failures put the tunnel into `PROXY_DOWN` with traffic blocked, and it keeps
    retrying. Off: traffic goes direct while it keeps retrying.
 5. **On stays on.** Once the user turns the tunnel on (`wasConnected`), only Disconnect (app, notification, tile) or
@@ -130,8 +146,9 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
    on mullvad.net / by another install is detected when Settings → VPN opens and on VPN-handshake repairs; the install
    is then `signedOut` and never re-registers by itself (that would silently take a slot): connect fails with "Signed
    out of Mullvad" until the user taps Log in.
-8. Secrets (accounts, VPN profiles, Mullvad, API keys) are stored encrypted with Keystore AES-GCM
-   (`data/SecretStore.kt`). Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
+8. Secrets (accounts, VPN profiles, Mullvad, API keys, tailnet auth key) are stored encrypted with Keystore AES-GCM
+   (`data/SecretStore.kt`). The tailnet node state (node key) is an AES-GCM file (`files/tailnet/state.enc`) whose key
+   is in `TailnetRepository`; like Mullvad devices it is per install and never in a backup. Backups are PBKDF2 + AES-GCM (`data/Backup.kt`, prefix `resproxy-backup-v1:`).
 9. Never show the proxy password, the API keys or the backup passphrase in UI or logs (including the extension's
    Diagnostics log in `chrome.storage.session`).
 10. Chrome: secrets are AES-GCM encrypted with a non-extractable key in IndexedDB (`background/store.ts`); only the
@@ -144,11 +161,13 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 | `app/src/main/java/dev/resproxy/App.kt` | `AppContainer` (manual DI): repos, `resolveVpn`, Mullvad login, backup export/import, migrations |
 | `data/` | `Models.kt` (Account, AppSettings, ConnectionSettings, VpnProfile, MullvadAccount, `VpnExit`), `Repositories.kt` (DataStore repos incl. `VpnRepository`), `SecretStore.kt`, `Backup.kt` |
 | `vpn/ProxyVpnService.kt` | TUN lifecycle, `watchSettings` (live apply), `healthLoop` (stall/handshake/engine detection), `repair`, network-change callback, reputation check + auto-rotate |
+| `vpn/TailnetController.kt` | Tailnet node lifecycle (bind/unbind by the service, debounced restarts on settings, crash guard, own network callback), `route()` for the relays, `logout()`, status for the UI |
 | `vpn/` other | `HevConfig` (YAML), `Routes` (LAN-bypass route complement), `TunnelState` (status + controller), `SystemHooks` (boot receiver, QS tile), `KeepAlive` (reconnect policy, `KeepAliveJob` watchdog), `TunnelNative` (JNI) |
+| `net/Tailnet.kt` | JNI to the Go node, `TailnetRoute` (what the relays call), interface list for Go, `inRange` |
 | `net/` | `Upstream` (SOCKS5/HTTP clients, RTT samples), `LoopbackServers` (relay, HTTP proxy, `RelayHealth`), `Resolver` (system DNS + DoH), `WireGuard` (config parser + JNI), `Mullvad` (API, relay list, wg-quick builder), `X25519`, `ProxyProbe`, `LatencyProbe` (parallel ICMP ping to every Mullvad relay / profile endpoint; results sort the Settings → VPN list and the home VPN picker) |
 | `provider/` | Credential presets per provider (`Presets.kt`), location catalogs (`ProviderLocations.kt`) |
 | `reputation/` | Sources, parsers, `ReputationAggregator` verdict rules |
-| `ui/` | Compose screens. Settings = hub (`SettingsScreen`) + pages (`SettingsPageScreen`, `SettingsPage` enum: VPN, Split tunnelling, Protection, …); building blocks `SettingsGroup` / `SettingRow` / `SwitchRow` / `Hint` in `Components.kt`; VPN page and home VPN picker in `VpnSection.kt` |
+| `ui/` | Compose screens. Settings = hub (`SettingsScreen`) + pages (`SettingsPageScreen`, `SettingsPage` enum: VPN, Split tunnelling, Protection, …); building blocks `SettingsGroup` / `SettingRow` / `SwitchRow` / `Hint` in `Components.kt`; VPN page and home VPN picker in `VpnSection.kt`; Tailnet page in `TailnetSection.kt` |
 | `app/src/main/jni/` | ndk-build for vendored hev-socks5-tunnel 2.19.3 (symlinks replaced by file copies) |
 | `app/src/test/` | JVM unit tests (no device needed). `SharedVectorsTest` reads `../shared/test-vectors` |
 
@@ -169,6 +188,9 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
 | Path | What |
 |---|---|
 | `main.go` | Android c-shared lib (wireguard-go + gVisor netstack): `nativeStart/Forward/Stop/Status/Ping` |
+| `tailnet.go` | JNI for `dev.resproxy.net.Tailnet` (own lock, independent of the WireGuard chain) |
+| `internal/tailnet/` | cgo-free tailnet node: tsnet setup (logs off), SOCKS5 front that dials peers only, inbound handler, encrypted state store, interface list from the app. `tailnet_test.go` runs two nodes against tailscale's in-process control server |
+| `cmd/tailnettest/` | Throwaway tailnet for manual tests (control server, DERP/STUN, peer `hostpeer` with HTTP on :8080; stdin `dial ip:port`) |
 | `cmd/resproxy-helper/` | Extension helper: native messaging (`main.go`), local proxy (`proxy.go`), SOCKS5/HTTP CONNECT client (`upstream.go`), WireGuard (`wg.go`), fetch/DNS/ping (`misc.go`), self-registration (`install_*.go`) |
 | `cmd/wgtestserver/` | WireGuard test peer (also used by `wg_chain_test.go`) |
 | `cmd/testproxy/`, `internal/testproxy/` | HTTP-CONNECT + SOCKS5 test proxy with auth that logs each login |
@@ -201,6 +223,15 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   unified log at notice level). devicectl can't read the App Group, so Debug builds copy `diag.log`, `status.json` and
   `settings.json` to the app's `Library/Caches/diag/` while the app is open:
   `xcrun devicectl device copy from --device <udid> --domain-type appDataContainer --domain-identifier dev.resproxy --source Library/Caches/diag/diag.log --destination diag.log`.
+
+## Build and test (Linux host)
+
+- Same as Windows with Unix paths: `android/local.properties` (git-ignored) with `sdk.dir=$HOME/Android/Sdk` and `go.dir`
+  (a Go install root), and `bash gradlew -Dorg.gradle.java.home=<JDK 21> …` (gradle.properties pins a Windows JDK path).
+  Go: `CGO_ENABLED=0 go test ./cmd/... ./internal/...`. No Swift: iOS changes can't be checked here.
+- Tailnet by hand: `go run ./cmd/tailnettest -ip <LAN IP>`, then on the device Settings → Tailnet → Coordination server
+  `http://<LAN IP>:9911`. The emulator reaches the host's LAN IP; `nc` from `adb shell` goes through the tunnel (keep its
+  stdin open: `(printf …; sleep 3) | nc host port`, the proxy drops a connection whose client half-closes at once).
 
 ## Build and test (Windows host)
 
@@ -306,12 +337,25 @@ apps → utun (NEPacketTunnelProvider) → hev-socks5-tunnel → Go relay SOCKS5
   relay failures. Auto-repair needs failures across ≥2 distinct hosts with no successes for 20 s. A relay connection
   where the app sent data and got nothing back counts as failed after 20 s (`NO_RESPONSE_MS`), not only when the app
   finally closes it (apps keep dead connections open for minutes).
-- **Restarting hev breaks apps while showing all green.** hev's fake-IP DNS table (100.64/10, TTL 1 s) lives inside
+- **Restarting hev breaks apps while showing all green.** hev's fake-IP DNS table (Android 198.19/16, iOS 100.64/10, TTL 1 s) lives inside
   hev and starts over on every restart, handing out the same addresses again in a new order. Browsers cache answers
   for about a minute, so after a restart their cached addresses point nowhere or at a different site, while our probe
   and IP check (which don't use the TUN) pass. Repairs used to restart hev every time (network switches, VPN handshake,
   a false "engine stalled"), which looked like "connected, clean IP, 0 B/s, nothing loads" until a manual reconnect.
   Don't restart hev unless hev itself is broken. The relay refuses fake IPs it is still handed (reply 4) and logs them.
+- **Android's fake-IP range is 198.19.0.0/16, not 100.64/10**: 100.64/10 is Tailscale's address range, and the relay
+  used to refuse all of it as stale fake IPs. `HevConfig.FAKE_NET` and `LocalSocksServer.isFakeDnsIp` must agree.
+  With LAN bypass, `Routes.v6` adds Tailscale's fd7a:115c:a1e0::/48 back (it sits inside the excluded fd00::/8).
+- **tsnet in an app process**: tailscale's log setup panics without HOME/TMPDIR/`/var/lib` ("no safe place found to store
+  log state"), so `tailnet.Start` sets `TS_LOGS_DIR` (and `TMPDIR` if unset) into the node's directory. Log upload is
+  off (`envknob.SetNoLogsNoSupport`, `logtail.Disable`). Go's `net.Interfaces` fails for apps on Android 11+, so the app
+  reports interfaces from Java (`Tailnet.reportInterfaces`, `netmon.RegisterInterfaceGetter`) on start and network
+  changes. A Go panic kills the whole process, VPN included, and can't be caught: `TailnetController` writes
+  `files/tailnet_starting` while a node starts (first minute) and, if the previous process crashed (Java or native,
+  `ApplicationExitInfo`) with it present, leaves the tailnet off with a message instead of crash-looping. Only a node
+  that ran clears the marker in `stopLocked()`; clearing it unconditionally made the guard never fire. Panics after
+  the first minute still take the process down (`DeadManAlarm` restarts it). The status JSON must not contain `null` lists (Kotlin decodes
+  lists). The tailnet makes `libwgbridge.so` ~22 MB per ABI (was ~7 MB); the debug APK is ~110 MB.
 - hev's stats are from its own side: tx = read from the TUN (apps' upload), rx = written to it (download). The Android
   meter had them swapped, which also made the old "engine stalled" check watch downloads and fire during streaming.
   The check now needs: no relay connection open or opened for 30 s while apps sent > 8 KB, or hev's thread gone

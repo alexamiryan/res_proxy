@@ -118,7 +118,7 @@ class LocalServersTest {
         val bridge = LocalSocksServer(upstream(), health).start()
         try {
             val e = runCatching {
-                Socks5Client.connect(Endpoint("127.0.0.1", bridge.port, Protocol.SOCKS5, "", ""), "100.64.0.7", 443, 3000)
+                Socks5Client.connect(Endpoint("127.0.0.1", bridge.port, Protocol.SOCKS5, "", ""), "198.19.0.7", 443, 3000)
             }.exceptionOrNull()
             assertEquals(4, (e as dev.resproxy.net.SocksRefusedException).code)
             assertEquals(1L, health.staleFakeIps.get())
@@ -130,12 +130,13 @@ class LocalServersTest {
     }
 
     @Test fun fakeDnsRange() {
-        assertTrue(LocalSocksServer.isFakeDnsIp("100.64.0.0"))
-        assertTrue(LocalSocksServer.isFakeDnsIp("100.127.255.255"))
-        assertFalse(LocalSocksServer.isFakeDnsIp("100.128.0.1"))
-        assertFalse(LocalSocksServer.isFakeDnsIp("100.63.1.1"))
-        assertFalse(LocalSocksServer.isFakeDnsIp("100.64.0"))
-        assertFalse(LocalSocksServer.isFakeDnsIp("100.64.example.com"))
+        assertTrue(LocalSocksServer.isFakeDnsIp("198.19.0.0"))
+        assertTrue(LocalSocksServer.isFakeDnsIp("198.19.255.255"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("198.18.0.1")) // TUN address
+        assertFalse(LocalSocksServer.isFakeDnsIp("198.20.0.1"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("100.64.0.7")) // tailnet range, no longer fake IPs
+        assertFalse(LocalSocksServer.isFakeDnsIp("198.19.0"))
+        assertFalse(LocalSocksServer.isFakeDnsIp("198.19.example.com"))
         assertFalse(LocalSocksServer.isFakeDnsIp("2001:db8::1"))
     }
 

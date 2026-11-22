@@ -122,6 +122,9 @@ class ProxyVpnService : VpnService() {
     @Volatile private var waitingForUser = false
     private var lastCheckKick = 0L
     private val relayHealth = RelayHealth()
+    /** Tailnet bytes through the relays (apps' upload / download): not proxy traffic, kept out of the usage. */
+    private val tailnetUp = java.util.concurrent.atomic.AtomicLong()
+    private val tailnetDown = java.util.concurrent.atomic.AtomicLong()
     /** EWMA of proxy handshake round trips (ms). */
     @Volatile private var proxyRtt: Double? = null
     private var chainStartedAt = 0L
@@ -145,6 +148,8 @@ class ProxyVpnService : VpnService() {
         scope.launch { watchSettings() }
         scope.launch { watchApiKeys() }
         scope.launch { supervise() }
+        // The tailnet node lives as long as the service (and the user wants the tunnel), independent of reconnects.
+        container.tailnet.bind(scope)
         // Every phase change and its reason goes to the diagnostics log.
         scope.launch {
             TunnelState.status.map { it.phase to it.message }.distinctUntilChanged().collect { (phase, msg) ->
@@ -175,6 +180,7 @@ class ProxyVpnService : VpnService() {
                 log("disconnected by the user")
                 DeadManAlarm.disarm(this@ProxyVpnService)
                 lock.withLock { teardown() }
+                container.tailnet.unbind()
                 stopService()
             }
             ACTION_ROTATE -> if (!active) idle() else scope.launch {
@@ -232,6 +238,7 @@ class ProxyVpnService : VpnService() {
         unlockReceiver?.let { runCatching { unregisterReceiver(it) } }
         unlockReceiver = null
         teardown()
+        container.tailnet.unbindNow()
         scope.cancel()
         alive = false
         super.onDestroy()
@@ -621,9 +628,12 @@ class ProxyVpnService : VpnService() {
         if (p.tunnelMode == TunnelMode.FULL) {
             val bridge = socksBridge
             if (bridge != null) bridge.upstream = up
-            else socksBridge = LocalSocksServer(up, relayHealth, gate, lanDirect = { bypassLan }).also { it.start() }
+            else socksBridge = LocalSocksServer(
+                up, relayHealth, gate, lanDirect = { bypassLan },
+                tailnet = container.tailnet::route, tailnetUp = tailnetUp, tailnetDown = tailnetDown,
+            ).also { it.start() }
         } else {
-            systemProxy = LocalHttpProxy(up, gate).also { it.start() }
+            systemProxy = LocalHttpProxy(up, gate, container.tailnet::route, tailnetUp, tailnetDown).also { it.start() }
         }
     }
 
@@ -819,10 +829,20 @@ class ProxyVpnService : VpnService() {
         }
     }
 
-    /** Monotonic (down, up) byte counters; hev counters reset on restart, so we track deltas across restarts. */
+    /**
+     * Monotonic (down, up) byte counters of proxy traffic. hev counts everything apps send through the TUN, tailnet
+     * traffic included, so the relay's tailnet bytes are taken out (proxy-only mode counts them separately already).
+     */
+    private fun counters(): Pair<Long, Long> {
+        val (down, up) = engineCounters()
+        if (profile?.tunnelMode != TunnelMode.FULL) return down to up
+        return (down - tailnetDown.get()) to (up - tailnetUp.get())
+    }
+
+    /** hev counters reset on restart, so we track deltas across restarts. */
     private var hevBase = 0L to 0L
     private var hevLast = 0L to 0L
-    private fun counters(): Pair<Long, Long> {
+    private fun engineCounters(): Pair<Long, Long> {
         val p = profile ?: return hevLast
         if (p.tunnelMode == TunnelMode.PROXY_ONLY) {
             val h = systemProxy ?: return hevLast

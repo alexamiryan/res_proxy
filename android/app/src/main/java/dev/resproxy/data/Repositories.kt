@@ -7,6 +7,7 @@ import androidx.datastore.preferences.core.stringPreferencesKey
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.flow.map
+import kotlinx.serialization.Serializable
 import kotlinx.serialization.builtins.ListSerializer
 import kotlinx.serialization.builtins.MapSerializer
 import kotlinx.serialization.builtins.serializer
@@ -182,6 +183,46 @@ class VpnRepository(private val store: DataStore<Preferences>, private val secre
         val PROFILES = stringPreferencesKey("vpn_profiles")
         val MULLVAD = stringPreferencesKey("mullvad")
         val LEGACY_CHAIN = stringPreferencesKey("vpn_chain")
+    }
+}
+
+/** Per-install tailnet secrets: [authKey] (optional, for logging in without a browser) and the node state's key. */
+@Serializable
+data class TailnetSecrets(val authKey: String = "", val stateKey: String = "")
+
+/** Tailnet secrets, Keystore-encrypted. Never in backups: the node key belongs to this install. */
+class TailnetRepository(private val store: DataStore<Preferences>, private val secrets: SecretStore) {
+
+    val current: Flow<TailnetSecrets> = store.data.map { prefs ->
+        prefs[TAILNET]?.let { runCatching { json.decodeFromString(TailnetSecrets.serializer(), secrets.decrypt(it)) }.getOrNull() }
+            ?: TailnetSecrets()
+    }
+
+    suspend fun get(): TailnetSecrets = current.first()
+
+    suspend fun setAuthKey(key: String) = edit { it.copy(authKey = key.trim()) }
+
+    /** The node state's AES key (hex), made on first use. */
+    suspend fun stateKey(): String {
+        get().stateKey.takeIf { it.length == 64 }?.let { return it }
+        val k = ByteArray(32).also { java.security.SecureRandom().nextBytes(it) }.joinToString("") { "%02x".format(it) }
+        edit { if (it.stateKey.length == 64) it else it.copy(stateKey = k) }
+        return get().stateKey
+    }
+
+    /** Forgets the auth key and the state key (the node state can't be decrypted any more: a fresh device). */
+    suspend fun clear() = store.edit { it.remove(TAILNET) }
+
+    private suspend fun edit(block: (TailnetSecrets) -> TailnetSecrets) {
+        store.edit { prefs ->
+            val cur = prefs[TAILNET]?.let { runCatching { json.decodeFromString(TailnetSecrets.serializer(), secrets.decrypt(it)) }.getOrNull() }
+                ?: TailnetSecrets()
+            prefs[TAILNET] = secrets.encrypt(json.encodeToString(TailnetSecrets.serializer(), block(cur)))
+        }
+    }
+
+    private companion object {
+        val TAILNET = stringPreferencesKey("tailnet_secrets")
     }
 }
 
